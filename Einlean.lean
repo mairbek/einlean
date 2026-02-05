@@ -13,7 +13,7 @@ namespace Einlean
 /-- A dimension identifier with a private constructor. -/
 structure Dim where
   private mk :: id : Nat
-  deriving DecidableEq, Repr, Hashable
+  deriving DecidableEq, Repr, Hashable, Inhabited
 
 /-- Create a dimension token (placeholder; uniqueness policy is external). -/
 def freshDim (id : Nat) : Dim :=
@@ -32,16 +32,96 @@ def List.finRange (n : Nat) : List (Fin n) :=
   go 0 []
 
 -- ============================================
+-- HELPER FUNCTIONS
+-- ============================================
+
+/-- Find position of a Dim in a DimList. -/
+def findDimIdx (dims : DimList) (d : Dim) : Option Nat :=
+  let rec go (l : List Dim) (idx : Nat) : Option Nat :=
+    match l with
+    | [] => none
+    | x :: xs => if x == d then some idx else go xs (idx + 1)
+  go dims 0
+
+/-- Compute row-major strides from a shape array. -/
+def computeStrides (shape : Array Nat) : Array Nat := Id.run do
+  let n := shape.size
+  if n == 0 then return #[]
+  let mut strides := Array.mkArray n 1
+  let mut acc := 1
+  for i in List.reverse (List.range n) do
+    strides := strides.set! i acc
+    acc := acc * shape[i]!
+  return strides
+
+/-- Total number of elements (product of shape). -/
+def totalSize (shape : Array Nat) : Nat :=
+  shape.foldl (· * ·) 1
+
+/-- Multi-index to flat index using strides and offset. -/
+def flatIndex (indices : Array Nat) (strides : Array Nat) (offset : Nat) : Nat := Id.run do
+  let mut idx := offset
+  for i in [:indices.size] do
+    idx := idx + indices[i]! * strides[i]!
+  return idx
+
+/-- Flat index to multi-index (row-major, given strides). -/
+def toMultiIndex (flat : Nat) (shape : Array Nat) : Array Nat := Id.run do
+  let strides := computeStrides shape
+  let n := shape.size
+  let mut indices := Array.mkArray n 0
+  let mut rem := flat
+  for i in [:n] do
+    let s := strides[i]!
+    if s > 0 then
+      indices := indices.set! i (rem / s)
+      rem := rem % s
+    else
+      indices := indices.set! i 0
+  return indices
+
+-- ============================================
 -- TENSORS
 -- ============================================
 
-/-- A tensor with a statically known dimension signature.
-    - `dims`: the list of dimensions (compile-time shape signature)
-    - `data`: the underlying float array
-    - `sizes`: runtime size for each dimension position -/
+/-- A tensor with a statically known dimension signature. -/
 structure Tensor (dims : DimList) where
   data : FloatArray
-  sizes : Dim → Option Nat
+  shape : Array Nat
+  strides : Array Nat
+  offset : Nat := 0
+
+/-- Create a tensor with given dimension sizes and an element function. -/
+def Tensor.ofFn (dims : DimList) (sizes : Dim → Nat) (f : Array Nat → Float) : Tensor dims := Id.run do
+  let shape := dims.map sizes |>.toArray
+  let strides := computeStrides shape
+  let total := totalSize shape
+  let mut data := FloatArray.mkEmpty total
+  for flat in [:total] do
+    let idx := toMultiIndex flat shape
+    data := data.push (f idx)
+  return { data := data, shape := shape, strides := strides, offset := 0 }
+
+/-- Query the size of a specific dimension. -/
+def Tensor.dimSize {dims : DimList} (t : Tensor dims) (d : Dim) : Option Nat :=
+  match findDimIdx dims d with
+  | some idx => if idx < t.shape.size then some t.shape[idx]! else none
+  | none => none
+
+/-- Element access via multi-index array. -/
+def Tensor.get! {dims : DimList} (t : Tensor dims) (indices : Array Nat) : Float :=
+  let flat := flatIndex indices t.strides t.offset
+  t.data.get! flat
+
+/-- Read all elements in logical (row-major) order. -/
+def Tensor.toList {dims : DimList} (t : Tensor dims) : List Float := Id.run do
+  let total := totalSize t.shape
+  let mut result : Array Float := Array.mkEmpty total
+  for flat in [:total] do
+    let idx := toMultiIndex flat t.shape
+    let physFlat := flatIndex idx t.strides t.offset
+    result := result.push (t.data.get! physFlat)
+  return result.toList
 
 -- ============================================
 -- SLOTS
@@ -80,17 +160,27 @@ instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : H
 -- REARRANGE
 -- ============================================
 
--- ============================================
--- REARRANGE
--- ============================================
-
-/-- Rearrange a tensor by returning slots in a new order. -/
+/-- Rearrange a tensor by returning slots in a new order (stride permutation, no data copy). -/
 def Tensor.rearrange {dims : DimList} {Out : Type}
     [h : HasDims Out dims]
-    (t : Tensor dims) (f : SlotTuple dims → Out) : Tensor h.outDims :=
-  { data := t.data
-    sizes := t.sizes
-  }
+    (t : Tensor dims) (_f : SlotTuple dims → Out) : Tensor h.outDims := Id.run do
+  let outDims := h.outDims
+  let n := outDims.length
+  let mut newShape := Array.mkArray n 0
+  let mut newStrides := Array.mkArray n 0
+  for i in [:n] do
+    let d := outDims[i]!
+    match findDimIdx dims d with
+    | some srcIdx =>
+      newShape := newShape.set! i (t.shape[srcIdx]!)
+      newStrides := newStrides.set! i (t.strides[srcIdx]!)
+    | none =>
+      newShape := newShape.set! i 0
+      newStrides := newStrides.set! i 0
+  return { data := t.data
+           shape := newShape
+           strides := newStrides
+           offset := t.offset }
 
 -- ============================================
 -- EINSUM (BINARY)
@@ -110,14 +200,67 @@ instance (A B : DimList) {α β : Type} [EinsumOut α A B] [EinsumOut β A B] : 
   outDims := (EinsumOut.outDims (Out := α) (A := A) (B := B)) ++
     (EinsumOut.outDims (Out := β) (A := A) (B := B))
 
-/-- Binary einsum driven by a slot lambda. -/
+/-- Check if a Dim is in a DimList. -/
+def dimIn (d : Dim) (ds : DimList) : Bool :=
+  ds.any (· == d)
+
+/-- Binary einsum driven by a slot lambda (nested loop contraction). -/
 def Tensor.einsum {A B : DimList} {Out : Type}
     [h : EinsumOut Out A B]
     (x : Tensor A) (y : Tensor B)
-    (f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims :=
-  { data := x.data
-    sizes := x.sizes
-  }
+    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims := Id.run do
+  let outDims := h.outDims
+  -- Compute contracted dims: dims in both A and B but not in outDims
+  let contracted := A.filter (fun d => dimIn d B && !dimIn d outDims)
+  -- Build output shape
+  let outShape := outDims.map (fun d =>
+    match findDimIdx A d with
+    | some idx => x.shape[idx]!
+    | none =>
+      match findDimIdx B d with
+      | some idx => y.shape[idx]!
+      | none => 0) |>.toArray
+  -- Build contracted shape
+  let contrShape := contracted.map (fun d =>
+    match findDimIdx A d with
+    | some idx => x.shape[idx]!
+    | none => 0) |>.toArray
+  let outTotal := totalSize outShape
+  let contrTotal := totalSize contrShape
+  let mut resultData := FloatArray.mkEmpty outTotal
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+    let mut acc : Float := 0.0
+    for contrFlat in [:contrTotal] do
+      let contrIdx := toMultiIndex contrFlat contrShape
+      -- Build A's multi-index
+      let mut aIdx := Array.mkArray A.length 0
+      for ai in [:A.length] do
+        let d := A[ai]!
+        match findDimIdx outDims d with
+        | some oi => aIdx := aIdx.set! ai (outIdx[oi]!)
+        | none =>
+          match findDimIdx contracted d with
+          | some ci => aIdx := aIdx.set! ai (contrIdx[ci]!)
+          | none => pure ()
+      -- Build B's multi-index
+      let mut bIdx := Array.mkArray B.length 0
+      for bi in [:B.length] do
+        let d := B[bi]!
+        match findDimIdx outDims d with
+        | some oi => bIdx := bIdx.set! bi (outIdx[oi]!)
+        | none =>
+          match findDimIdx contracted d with
+          | some ci => bIdx := bIdx.set! bi (contrIdx[ci]!)
+          | none => pure ()
+      let aVal := x.get! aIdx
+      let bVal := y.get! bIdx
+      acc := acc + aVal * bVal
+    resultData := resultData.push acc
+  return { data := resultData
+           shape := outShape
+           strides := computeStrides outShape
+           offset := 0 }
 
 -- ============================================
 -- EXAMPLES
@@ -127,7 +270,7 @@ def di : Dim := freshDim 0
 def dj : Dim := freshDim 1
 def dk : Dim := freshDim 2
 
-def transpose_example (t : Tensor [di, dj]) : Tensor [dj, di] :=
+def transpose_example {dx dy: Dim} (t : Tensor [dx, dy]) : Tensor [dy, dx] :=
   t.rearrange fun (i, j) => (j, i)
 
 def b : Dim := freshDim 10
@@ -136,14 +279,11 @@ def w : Dim := freshDim 12
 def c : Dim := freshDim 13
 
 def image : Tensor [b, h, w, c] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == b then some 32 else
-      if d == h then some 224 else
-      if d == w then some 224 else
-      if d == c then some 3 else
-      none
-  }
+  Tensor.ofFn [b, h, w, c]
+    (fun d =>
+      if d == b then 32 else if d == h then 224 else
+      if d == w then 224 else 3)
+    (fun _ => 0.0)
 
 def transposed : Tensor [b, c, h, w] :=
   image.rearrange fun (b, h, w, c) => (b, c, h, w)
@@ -152,23 +292,36 @@ def i : Dim := freshDim 20
 def j : Dim := freshDim 21
 def k : Dim := freshDim 22
 
+-- 2×3 matrix: [[1,2,3],[4,5,6]]
 def a : Tensor [i, k] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == i then some 2 else
-      if d == k then some 3 else
-      none
-  }
+  Tensor.ofFn [i, k]
+    (fun d => if d == i then 2 else 3)
+    (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
 
+#eval a.toList
+#eval (transpose_example a).toList
+
+-- 3×4 matrix: [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 def bmat : Tensor [k, j] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == k then some 3 else
-      if d == j then some 4 else
-      none
-  }
+  Tensor.ofFn [k, j]
+    (fun d => if d == k then 3 else 4)
+    (fun idx => Float.ofNat (idx[0]! * 4 + idx[1]! + 10))
 
+set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
   Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
+
+-- Transpose test: create a 2×3 matrix and transpose it
+def small : Tensor [di, dj] :=
+  Tensor.ofFn [di, dj]
+    (fun d => if d == di then 2 else 3)
+    (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
+
+def smallT : Tensor [dj, di] :=
+  small.rearrange fun (i, j) => (j, i)
+
+#eval small.toList    -- [1, 2, 3, 4, 5, 6]
+#eval smallT.toList   -- [1, 4, 2, 5, 3, 6]
+#eval cmat.toList     -- [92, 98, 104, 110, 218, 233, 248, 263]
 
 end Einlean
