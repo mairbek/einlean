@@ -10,14 +10,22 @@ namespace Einlean
 -- DIMENSIONS
 -- ============================================
 
-/-- A dimension identifier with a private constructor. -/
+/-- A dimension identifier with a runtime size. Identity is by `id` only. -/
 structure Dim where
-  private mk :: id : Nat
-  deriving DecidableEq, Repr, Hashable, Inhabited
+  private mk ::
+    id : Nat
+    size : Nat
+  deriving Repr, Inhabited
 
-/-- Create a dimension token (placeholder; uniqueness policy is external). -/
-def freshDim (id : Nat) : Dim :=
-  ⟨id⟩
+instance : BEq Dim where
+  beq a b := a.id == b.id
+
+instance : Hashable Dim where
+  hash d := hash d.id
+
+/-- Create a dimension with a unique id and a runtime size. -/
+def freshDim (id : Nat) (size : Nat) : Dim :=
+  ⟨id, size⟩
 
 /-- Type-level dimension list (shape signature). -/
 abbrev DimList := List Dim
@@ -65,7 +73,7 @@ def flatIndex (indices : Array Nat) (strides : Array Nat) (offset : Nat) : Nat :
     idx := idx + indices[i]! * strides[i]!
   return idx
 
-/-- Flat index to multi-index (row-major, given strides). -/
+/-- Flat index to multi-index (row-major, given shape). -/
 def toMultiIndex (flat : Nat) (shape : Array Nat) : Array Nat := Id.run do
   let strides := computeStrides shape
   let n := shape.size
@@ -80,6 +88,10 @@ def toMultiIndex (flat : Nat) (shape : Array Nat) : Array Nat := Id.run do
       indices := indices.set! i 0
   return indices
 
+/-- Extract shape from a DimList (sizes come from each Dim). -/
+def shapeOf (dims : DimList) : Array Nat :=
+  dims.map (fun d => d.size) |>.toArray
+
 -- ============================================
 -- TENSORS
 -- ============================================
@@ -91,9 +103,9 @@ structure Tensor (dims : DimList) where
   strides : Array Nat
   offset : Nat := 0
 
-/-- Create a tensor with given dimension sizes and an element function. -/
-def Tensor.ofFn (dims : DimList) (sizes : Dim → Nat) (f : Array Nat → Float) : Tensor dims := Id.run do
-  let shape := dims.map sizes |>.toArray
+/-- Create a tensor populated by an element function over multi-indices. -/
+def Tensor.ofFn (dims : DimList) (f : Array Nat → Float) : Tensor dims := Id.run do
+  let shape := shapeOf dims
   let strides := computeStrides shape
   let total := totalSize shape
   let mut data := FloatArray.mkEmpty total
@@ -102,11 +114,9 @@ def Tensor.ofFn (dims : DimList) (sizes : Dim → Nat) (f : Array Nat → Float)
     data := data.push (f idx)
   return { data := data, shape := shape, strides := strides, offset := 0 }
 
-/-- Query the size of a specific dimension. -/
-def Tensor.dimSize {dims : DimList} (t : Tensor dims) (d : Dim) : Option Nat :=
-  match findDimIdx dims d with
-  | some idx => if idx < t.shape.size then some t.shape[idx]! else none
-  | none => none
+/-- Create a tensor filled with zeros. -/
+def Tensor.zeros (dims : DimList) : Tensor dims :=
+  Tensor.ofFn dims (fun _ => 0.0)
 
 /-- Element access via multi-index array. -/
 def Tensor.get! {dims : DimList} (t : Tensor dims) (indices : Array Nat) : Float :=
@@ -266,59 +276,44 @@ def Tensor.einsum {A B : DimList} {Out : Type}
 -- EXAMPLES
 -- ============================================
 
-def di : Dim := freshDim 0
-def dj : Dim := freshDim 1
-def dk : Dim := freshDim 2
+-- Dimensions carry their sizes
+def di : Dim := freshDim 0 2
+def dj : Dim := freshDim 1 3
 
-def transpose_example {dx dy: Dim} (t : Tensor [dx, dy]) : Tensor [dy, dx] :=
-  t.rearrange fun (i, j) => (j, i)
+-- 2×3 matrix: [[1,2,3],[4,5,6]]
+def small : Tensor [di, dj] :=
+  Tensor.ofFn [di, dj] (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
 
-def b : Dim := freshDim 10
-def h : Dim := freshDim 11
-def w : Dim := freshDim 12
-def c : Dim := freshDim 13
+-- Transpose — same data, permuted strides
+def smallT : Tensor [dj, di] :=
+  small.rearrange fun (i, j) => (j, i)
 
-def image : Tensor [b, h, w, c] :=
-  Tensor.ofFn [b, h, w, c]
-    (fun d =>
-      if d == b then 32 else if d == h then 224 else
-      if d == w then 224 else 3)
-    (fun _ => 0.0)
-
-def transposed : Tensor [b, c, h, w] :=
-  image.rearrange fun (b, h, w, c) => (b, c, h, w)
-
-def i : Dim := freshDim 20
-def j : Dim := freshDim 21
-def k : Dim := freshDim 22
+def i : Dim := freshDim 20 2
+def j : Dim := freshDim 21 4
+def k : Dim := freshDim 22 3
 
 -- 2×3 matrix: [[1,2,3],[4,5,6]]
 def a : Tensor [i, k] :=
-  Tensor.ofFn [i, k]
-    (fun d => if d == i then 2 else 3)
-    (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
-
-#eval a.toList
-#eval (transpose_example a).toList
+  Tensor.ofFn [i, k] (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
 
 -- 3×4 matrix: [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 def bmat : Tensor [k, j] :=
-  Tensor.ofFn [k, j]
-    (fun d => if d == k then 3 else 4)
-    (fun idx => Float.ofNat (idx[0]! * 4 + idx[1]! + 10))
+  Tensor.ofFn [k, j] (fun idx => Float.ofNat (idx[0]! * 4 + idx[1]! + 10))
 
 set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
   Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
 
--- Transpose test: create a 2×3 matrix and transpose it
-def small : Tensor [di, dj] :=
-  Tensor.ofFn [di, dj]
-    (fun d => if d == di then 2 else 3)
-    (fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1))
+-- Image example — sizes live in the dims
+def b : Dim := freshDim 10 32
+def h : Dim := freshDim 11 224
+def w : Dim := freshDim 12 224
+def c : Dim := freshDim 13 3
 
-def smallT : Tensor [dj, di] :=
-  small.rearrange fun (i, j) => (j, i)
+def image : Tensor [b, h, w, c] := Tensor.zeros [b, h, w, c]
+
+def transposed : Tensor [b, c, h, w] :=
+  image.rearrange fun (b, h, w, c) => (b, c, h, w)
 
 #eval small.toList    -- [1, 2, 3, 4, 5, 6]
 #eval smallT.toList   -- [1, 4, 2, 5, 3, 6]
