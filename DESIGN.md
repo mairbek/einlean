@@ -115,7 +115,62 @@ Tensor [batch, height, width, channels]
            ↓
    HasDims extracts: [batch, channels, height, width]
            ↓
-   Tensor [batch, channels, height, width]
+Tensor [batch, channels, height, width]
+```
+
+## Examples
+
+### 1. Define a Tensor
+
+```lean
+def b : Dim := freshDim 0
+def h : Dim := freshDim 1
+def w : Dim := freshDim 2
+def c : Dim := freshDim 3
+
+def image : Tensor [b, h, w, c] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == b then some 32 else
+      if d == h then some 224 else
+      if d == w then some 224 else
+      if d == c then some 3 else
+      none
+  }
+```
+
+### 2. Rearrange a Tensor
+
+```lean
+def transposed : Tensor [b, c, h, w] :=
+  image.rearrange fun (b, h, w, c) => (b, c, h, w)
+```
+
+### 3. Matmul via Einsum
+
+```lean
+def i : Dim := freshDim 10
+def j : Dim := freshDim 11
+def k : Dim := freshDim 12
+
+def a : Tensor [i, k] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == i then some 2 else
+      if d == k then some 3 else
+      none
+  }
+
+def bmat : Tensor [k, j] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == k then some 3 else
+      if d == j then some 4 else
+      none
+  }
+
+def cmat : Tensor [i, j] :=
+  Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
 ```
 
 ## Implementation Tasks

@@ -121,4 +121,45 @@ def dk : Dim := freshDim 2
 def transpose_example (t : Tensor [di, dj]) : Tensor [dj, di] :=
   t.rearrange fun (i, j) => (j, i)
 
+def b : Dim := freshDim 10
+def h : Dim := freshDim 11
+def w : Dim := freshDim 12
+def c : Dim := freshDim 13
+
+def image : Tensor [b, h, w, c] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == b then some 32 else
+      if d == h then some 224 else
+      if d == w then some 224 else
+      if d == c then some 3 else
+      none
+  }
+
+def transposed : Tensor [b, c, h, w] :=
+  image.rearrange fun (b, h, w, c) => (b, c, h, w)
+
+def i : Dim := freshDim 20
+def j : Dim := freshDim 21
+def k : Dim := freshDim 22
+
+def a : Tensor [i, k] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == i then some 2 else
+      if d == k then some 3 else
+      none
+  }
+
+def bmat : Tensor [k, j] :=
+  { data := FloatArray.mkEmpty 0
+    sizes := fun d =>
+      if d == k then some 3 else
+      if d == j then some 4 else
+      none
+  }
+
+def cmat : Tensor [i, j] :=
+  Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
+
 end Einlean
