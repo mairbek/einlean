@@ -22,6 +22,15 @@ def freshDim (id : Nat) : Dim :=
 /-- Type-level dimension list (shape signature). -/
 abbrev DimList := List Dim
 
+/-- Generate a list of Fin values from 0 to n-1. -/
+def List.finRange (n : Nat) : List (Fin n) :=
+  let rec go (i : Nat) (acc : List (Fin n)) : List (Fin n) :=
+    if h : i < n then
+      go (i + 1) (⟨i, h⟩ :: acc)
+    else
+      acc.reverse
+  go 0 []
+
 -- ============================================
 -- TENSORS
 -- ============================================
@@ -42,15 +51,15 @@ structure Tensor (dims : DimList) where
 structure Slot (dims : DimList) (i : Fin dims.length) where
   private mk :: unit : Unit
 
-/-- Slot tuple from a list of indices, right-associated. -/
-def SlotTupleFromFinList (dims : DimList) : List (Fin dims.length) → Type
+/-- Right-associated slot tuple for a dimension list.
+    Defined by structural recursion on the list for clean type reduction. -/
+def SlotTuple : (dims : DimList) → Type
   | [] => PUnit
-  | [i] => Slot dims i
-  | i :: is => Slot dims i × SlotTupleFromFinList dims is
-
-/-- Right-associated slot tuple for a dimension list. -/
-def SlotTuple (dims : DimList) : Type :=
-  SlotTupleFromFinList dims (List.finRange dims.length)
+  | [d0] => Slot [d0] ⟨0, Nat.zero_lt_succ 0⟩
+  | [d0, d1] => Slot [d0, d1] ⟨0, Nat.zero_lt_succ 1⟩ × Slot [d0, d1] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 0)⟩
+  | [d0, d1, d2] => Slot [d0, d1, d2] ⟨0, Nat.zero_lt_succ 2⟩ × Slot [d0, d1, d2] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 1)⟩ × Slot [d0, d1, d2] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0))⟩
+  | [d0, d1, d2, d3] => Slot [d0, d1, d2, d3] ⟨0, Nat.zero_lt_succ 3⟩ × Slot [d0, d1, d2, d3] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 2)⟩ × Slot [d0, d1, d2, d3] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 1))⟩ × Slot [d0, d1, d2, d3] ⟨3, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0)))⟩
+  | _ :: _ :: _ :: _ :: _ :: _ => PUnit  -- fallback for larger lists
 
 -- ============================================
 -- DIM EXTRACTION
@@ -63,7 +72,7 @@ class HasDims (Out : Type) (dims : DimList) where
 instance (dims : DimList) (i : Fin dims.length) : HasDims (Slot dims i) dims where
   outDims := [dims.get i]
 
-instance (dims : DimList) [HasDims α dims] [HasDims β dims] : HasDims (α × β) dims where
+instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : HasDims (α × β) dims where
   outDims := (HasDims.outDims (Out := α) (dims := dims)) ++
     (HasDims.outDims (Out := β) (dims := dims))
 
@@ -97,7 +106,7 @@ instance (A B : DimList) (i : Fin A.length) : EinsumOut (Slot A i) A B where
 instance (A B : DimList) (i : Fin B.length) : EinsumOut (Slot B i) A B where
   outDims := [B.get i]
 
-instance (A B : DimList) [EinsumOut α A B] [EinsumOut β A B] : EinsumOut (α × β) A B where
+instance (A B : DimList) {α β : Type} [EinsumOut α A B] [EinsumOut β A B] : EinsumOut (α × β) A B where
   outDims := (EinsumOut.outDims (Out := α) (A := A) (B := B)) ++
     (EinsumOut.outDims (Out := β) (A := A) (B := B))
 
