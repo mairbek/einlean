@@ -14,14 +14,22 @@ namespace Einlean
 -- DIMENSIONS
 -- ============================================
 
-structure Dim where
+structure Atom where
+  id : Nat
   size : Nat
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, BEq, DecidableEq
 
-def dim (size : Nat) : Dim := ⟨size⟩
+structure Dim where
+  atoms : List Atom
+  deriving Repr, Inhabited, BEq, DecidableEq
+
+def dim (id : Nat) (size : Nat) : Dim := ⟨[⟨id, size⟩]⟩
+
+def Dim.size (d : Dim) : Nat :=
+  d.atoms.foldl (fun acc a => acc * a.size) 1
 
 instance : Mul Dim where
-  mul d1 d2 := ⟨d1.size * d2.size⟩
+  mul d1 d2 := ⟨d1.atoms ++ d2.atoms⟩
 
 abbrev DimList := List Dim
 
@@ -207,11 +215,8 @@ instance (dims : DimList) (is : List (Fin dims.length)) (j : Fin dims.length) :
     HMul (MergedSlot dims is) (Slot dims j) (MergedSlot dims (is ++ [j])) where
   hMul _ _ := ⟨()⟩
 
-def mergedDimSize (dims : DimList) (is : List (Fin dims.length)) : Nat :=
-  match is with
-  | [] => 1
-  | [i] => (dims.get i).size
-  | i :: rest => (dims.get i).size * mergedDimSize dims rest
+def mergedDim (dims : DimList) (is : List (Fin dims.length)) : Dim :=
+  ⟨is.foldl (fun acc i => acc ++ (dims.get i).atoms) []⟩
 
 -- ============================================
 -- REARRANGE (position-based, supports merging)
@@ -226,7 +231,7 @@ instance (dims : DimList) (i : Fin dims.length) : HasDims (Slot dims i) dims whe
   outMapping := [[i.val]]
 
 instance (dims : DimList) (is : List (Fin dims.length)) : HasDims (MergedSlot dims is) dims where
-  outDims := [⟨mergedDimSize dims is⟩]
+  outDims := [mergedDim dims is]
   outMapping := [is.map Fin.val]
 
 instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : HasDims (α × β) dims where
@@ -235,17 +240,15 @@ instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : H
   outMapping := (HasDims.outMapping (Out := α) (dims := dims)) ++
     (HasDims.outMapping (Out := β) (dims := dims))
 
-def Tensor.rearrange {dims : DimList} {Out : Type}
-    [h : HasDims Out dims]
-    (t : Tensor dims) (_f : SlotTuple dims → Out) : Tensor h.outDims := Id.run do
-  let mapping := h.outMapping.toArray
+def Tensor.rearrangeCore {inDims outDims : DimList}
+    (t : Tensor inDims) (mapping : Array (Array Nat)) : Tensor outDims := Id.run do
   let outLen := mapping.size
   -- Build output shape: product of input sizes for each output axis
   let mut outShape := Array.mkArray outLen 0
   for oAxis in [:outLen] do
     let axes := mapping[oAxis]!
     let mut sz := 1
-    for aIdx in [:axes.length] do
+    for aIdx in [:axes.size] do
       sz := sz * t.shape[axes[aIdx]!]!
     outShape := outShape.set! oAxis sz
   let outStrides := computeStrides outShape
@@ -254,13 +257,13 @@ def Tensor.rearrange {dims : DimList} {Out : Type}
   for outFlat in [:outTotal] do
     let outIdx := toMultiIndex outFlat outShape
     -- Build input multi-index by decomposing each output index
-    let mut inIdx := Array.mkArray dims.length 0
+    let mut inIdx := Array.mkArray inDims.length 0
     for oAxis in [:outLen] do
       let axes := mapping[oAxis]!
       let mut remainder := outIdx[oAxis]!
       -- Decompose right-to-left (last merged axis varies fastest)
-      for rev in [:axes.length] do
-        let aIdx := axes.length - 1 - rev
+      for rev in [:axes.size] do
+        let aIdx := axes.size - 1 - rev
         let p := axes[aIdx]!
         let sz := t.shape[p]!
         inIdx := inIdx.set! p (remainder % sz)
@@ -271,6 +274,51 @@ def Tensor.rearrange {dims : DimList} {Out : Type}
            shape := outShape
            strides := outStrides
            offset := 0 }
+
+def Tensor.rearrangeBy {dims : DimList} {Out : Type}
+    [h : HasDims Out dims]
+    (t : Tensor dims) (_f : SlotTuple dims → Out) : Tensor h.outDims :=
+  Tensor.rearrangeCore t (h.outMapping.map (·.toArray) |>.toArray)
+
+-- ============================================
+-- LAMBDA-FREE REARRANGE (atom-based)
+-- ============================================
+
+def allAtoms (dims : DimList) : List Atom :=
+  dims.foldl (fun acc d => acc ++ d.atoms) []
+
+def validRearrange (inDims outDims : DimList) : Bool :=
+  let inA := allAtoms inDims
+  let outA := allAtoms outDims
+  inA.length == outA.length &&
+  inA.all (fun a => outA.any (· == a)) &&
+  outA.all (fun a => inA.any (· == a))
+
+/-- For each output dim, find which input axis indices contribute to it by matching atom IDs. -/
+def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run do
+  -- Build flat list of (inputAxisIndex, atom) pairs
+  let mut inAtomIndex : Array (Nat × Atom) := #[]
+  for axIdx in [:inDims.length] do
+    let d := inDims[axIdx]!
+    for a in d.atoms do
+      inAtomIndex := inAtomIndex.push (axIdx, a)
+  -- For each output dim, find matching input axes
+  let mut result : Array (Array Nat) := #[]
+  for outD in outDims do
+    let mut axes : Array Nat := #[]
+    for outAtom in outD.atoms do
+      -- Find the input atom with matching id
+      for (axIdx, inAtom) in inAtomIndex do
+        if inAtom == outAtom then
+          -- Only add axis if not already present
+          if !(axes.any (· == axIdx)) then
+            axes := axes.push axIdx
+    result := result.push axes
+  return result
+
+def Tensor.rearrange {inDims outDims : DimList} (t : Tensor inDims)
+    (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims :=
+  Tensor.rearrangeCore t (computeAtomMapping inDims outDims)
 
 -- ============================================
 -- EINSUM (position-based)
@@ -376,19 +424,19 @@ def Tensor.einsum {A B : DimList} {Out : Type}
 -- EXAMPLES
 -- ============================================
 
-def di := dim 2
-def dj := dim 3
+def di := dim 0 2
+def dj := dim 1 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
 def small : Tensor [di, dj] := [[1,2,3],[4,5,6]]
 
--- Transpose — same data, permuted strides
+-- Transpose (lambda-based) — same data, permuted strides
 def smallT : Tensor [dj, di] :=
-  small.rearrange fun (i, j) => (j, i)
+  small.rearrangeBy fun (i, j) => (j, i)
 
-def i := dim 2
-def j := dim 4
-def k := dim 3
+def i := dim 2 2
+def j := dim 3 4
+def k := dim 4 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
 def a : Tensor [i, k] := [[1,2,3],[4,5,6]]
@@ -396,34 +444,46 @@ def a : Tensor [i, k] := [[1,2,3],[4,5,6]]
 -- 3×4 matrix [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 def bmat : Tensor [k, j] := [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 
+set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
   Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
 
 -- Image — sizes live in the dims
-def b := dim 32
-def h := dim 224
-def w := dim 224
-def c := dim 3
+def b := dim 5 32
+def h := dim 6 224
+def w := dim 7 224
+def c := dim 8 3
 
 def image : Tensor [b, h, w, c] := Tensor.zeros
 
+-- Lambda-based (renamed to rearrangeBy)
 def transposed : Tensor [b, c, h, w] :=
-  image.rearrange fun (b, h, w, c) => (b, c, h, w)
+  image.rearrangeBy fun (b, h, w, c) => (b, c, h, w)
 
--- Merge dims: "b h w c -> h (b w) c"
+-- Merge dims (lambda-based): "b h w c -> h (b w) c"
 def merged : Tensor [h, b * w, c] :=
-  image.rearrange fun (b, h, w, c) => (h, b * w, c)
+  image.rearrangeBy fun (b, h, w, c) => (h, b * w, c)
+
+def bw := b * w
+
+def transposed2 : Tensor [b, c, h, w] := image.rearrange
+def merged2 : Tensor [h, bw, c] := image.rearrange
 
 -- Small merge test: 2×3 -> 6 (flatten)
-def db := dim 2
-def dw := dim 3
+def db := dim 9 2
+def dw := dim 10 3
 def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 
 #eval small      -- [[1, 2, 3], [4, 5, 6]]
 #eval smallT     -- [[1, 4], [2, 5], [3, 6]]
 #eval cmat       -- [[92, 98, 104, 110], [218, 233, 248, 263]]
 #eval flat2d     -- [[1, 2, 3], [4, 5, 6]]
-#eval flat2d.rearrange fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
-#eval flat2d.rearrange fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
+#eval flat2d.rearrangeBy fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
+#eval flat2d.rearrangeBy fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
+
+
+-- Lambda-free transpose
+def smallT2 : Tensor [dj, di] := small.rearrange
+#eval smallT2    -- [[1, 4], [2, 5], [3, 6]]
 
 end Einlean
