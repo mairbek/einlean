@@ -20,6 +20,9 @@ structure Dim where
 
 def dim (size : Nat) : Dim := ⟨size⟩
 
+instance : Mul Dim where
+  mul d1 d2 := ⟨d1.size * d2.size⟩
+
 abbrev DimList := List Dim
 
 -- ============================================
@@ -132,6 +135,49 @@ def Tensor.toList {dims : DimList} (t : Tensor dims) : List Float := Id.run do
   return result.toList
 
 -- ============================================
+-- TENSOR FORMATTING
+-- ============================================
+
+private def formatFloat (f : Float) : String :=
+  if f == f.floor then
+    if f < 0 then "-" ++ toString ((-f).toUInt64)
+    else toString (f.toUInt64)
+  else
+    toString f
+
+private partial def formatSubtensor (data : Array Float) (offset : Nat) (shape : List Nat) (indent : Nat) : String × Nat :=
+  match shape with
+  | [] => (formatFloat (data.get! offset), offset + 1)
+  | [n] => Id.run do
+    let mut s := "["
+    for idx in [:n] do
+      if idx > 0 then s := s ++ ", "
+      s := s ++ formatFloat (data.get! (offset + idx))
+    return (s ++ "]", offset + n)
+  | n :: rest => Id.run do
+    let innerSize := rest.foldl (· * ·) 1
+    let mut s := "["
+    let innerIndent := indent + 1
+    for idx in [:n] do
+      if idx > 0 then
+        s := s ++ ",\n"
+        for _ in [:innerIndent] do s := s ++ " "
+      let (sub, _) := formatSubtensor data (offset + idx * innerSize) rest innerIndent
+      s := s ++ sub
+    return (s ++ "]", offset + n * innerSize)
+
+def Tensor.format {dims : DimList} (t : Tensor dims) : String :=
+  let data := t.toList.toArray
+  let (s, _) := formatSubtensor data 0 t.shape.toList 0
+  s
+
+instance {dims : DimList} : Repr (Tensor dims) where
+  reprPrec t _ := .text t.format
+
+instance {dims : DimList} : ToString (Tensor dims) where
+  toString := Tensor.format
+
+-- ============================================
 -- SLOTS
 -- ============================================
 
@@ -147,38 +193,84 @@ def SlotTuple : (dims : DimList) → Type
   | _ :: _ :: _ :: _ :: _ :: _ => PUnit
 
 -- ============================================
--- REARRANGE (position-based)
+-- MERGED SLOTS (for dimension merging in rearrange)
+-- ============================================
+
+structure MergedSlot (dims : DimList) (is : List (Fin dims.length)) where
+  private mk :: unit : Unit
+
+instance (dims : DimList) (i j : Fin dims.length) :
+    HMul (Slot dims i) (Slot dims j) (MergedSlot dims [i, j]) where
+  hMul _ _ := ⟨()⟩
+
+instance (dims : DimList) (is : List (Fin dims.length)) (j : Fin dims.length) :
+    HMul (MergedSlot dims is) (Slot dims j) (MergedSlot dims (is ++ [j])) where
+  hMul _ _ := ⟨()⟩
+
+def mergedDimSize (dims : DimList) (is : List (Fin dims.length)) : Nat :=
+  match is with
+  | [] => 1
+  | [i] => (dims.get i).size
+  | i :: rest => (dims.get i).size * mergedDimSize dims rest
+
+-- ============================================
+-- REARRANGE (position-based, supports merging)
 -- ============================================
 
 class HasDims (Out : Type) (dims : DimList) where
   outDims : DimList
-  outPerm : List Nat
+  outMapping : List (List Nat)
 
 instance (dims : DimList) (i : Fin dims.length) : HasDims (Slot dims i) dims where
   outDims := [dims.get i]
-  outPerm := [i.val]
+  outMapping := [[i.val]]
+
+instance (dims : DimList) (is : List (Fin dims.length)) : HasDims (MergedSlot dims is) dims where
+  outDims := [⟨mergedDimSize dims is⟩]
+  outMapping := [is.map Fin.val]
 
 instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : HasDims (α × β) dims where
   outDims := (HasDims.outDims (Out := α) (dims := dims)) ++
     (HasDims.outDims (Out := β) (dims := dims))
-  outPerm := (HasDims.outPerm (Out := α) (dims := dims)) ++
-    (HasDims.outPerm (Out := β) (dims := dims))
+  outMapping := (HasDims.outMapping (Out := α) (dims := dims)) ++
+    (HasDims.outMapping (Out := β) (dims := dims))
 
 def Tensor.rearrange {dims : DimList} {Out : Type}
     [h : HasDims Out dims]
     (t : Tensor dims) (_f : SlotTuple dims → Out) : Tensor h.outDims := Id.run do
-  let perm := h.outPerm.toArray
-  let n := perm.size
-  let mut newShape := Array.mkArray n 0
-  let mut newStrides := Array.mkArray n 0
-  for i in [:n] do
-    let srcIdx := perm[i]!
-    newShape := newShape.set! i (t.shape[srcIdx]!)
-    newStrides := newStrides.set! i (t.strides[srcIdx]!)
-  return { data := t.data
-           shape := newShape
-           strides := newStrides
-           offset := t.offset }
+  let mapping := h.outMapping.toArray
+  let outLen := mapping.size
+  -- Build output shape: product of input sizes for each output axis
+  let mut outShape := Array.mkArray outLen 0
+  for oAxis in [:outLen] do
+    let axes := mapping[oAxis]!
+    let mut sz := 1
+    for aIdx in [:axes.length] do
+      sz := sz * t.shape[axes[aIdx]!]!
+    outShape := outShape.set! oAxis sz
+  let outStrides := computeStrides outShape
+  let outTotal := totalSize outShape
+  let mut resultData := FloatArray.mkEmpty outTotal
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+    -- Build input multi-index by decomposing each output index
+    let mut inIdx := Array.mkArray dims.length 0
+    for oAxis in [:outLen] do
+      let axes := mapping[oAxis]!
+      let mut remainder := outIdx[oAxis]!
+      -- Decompose right-to-left (last merged axis varies fastest)
+      for rev in [:axes.length] do
+        let aIdx := axes.length - 1 - rev
+        let p := axes[aIdx]!
+        let sz := t.shape[p]!
+        inIdx := inIdx.set! p (remainder % sz)
+        remainder := remainder / sz
+    let flat := flatIndex inIdx t.strides t.offset
+    resultData := resultData.push (t.data.get! flat)
+  return { data := resultData
+           shape := outShape
+           strides := outStrides
+           offset := 0 }
 
 -- ============================================
 -- EINSUM (position-based)
@@ -318,8 +410,20 @@ def image : Tensor [b, h, w, c] := Tensor.zeros
 def transposed : Tensor [b, c, h, w] :=
   image.rearrange fun (b, h, w, c) => (b, c, h, w)
 
-#eval small.toList    -- [1, 2, 3, 4, 5, 6]
-#eval smallT.toList   -- [1, 4, 2, 5, 3, 6]
-#eval cmat.toList     -- [92, 98, 104, 110, 218, 233, 248, 263]
+-- Merge dims: "b h w c -> h (b w) c"
+def merged : Tensor [h, b * w, c] :=
+  image.rearrange fun (b, h, w, c) => (h, b * w, c)
+
+-- Small merge test: 2×3 -> 6 (flatten)
+def db := dim 2
+def dw := dim 3
+def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
+
+#eval small      -- [[1, 2, 3], [4, 5, 6]]
+#eval smallT     -- [[1, 4], [2, 5], [3, 6]]
+#eval cmat       -- [[92, 98, 104, 110], [218, 233, 248, 263]]
+#eval flat2d     -- [[1, 2, 3], [4, 5, 6]]
+#eval flat2d.rearrange fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
+#eval flat2d.rearrange fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
 
 end Einlean
