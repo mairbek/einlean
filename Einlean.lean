@@ -88,6 +88,36 @@ def Tensor.zeros {dims : DimList} : Tensor dims :=
 def Tensor.fill {dims : DimList} (v : Float) : Tensor dims :=
   Tensor.ofFn (fun _ => v)
 
+def Tensor.ofData {dims : DimList} (data : List Float) : Tensor dims :=
+  let shape := shapeOf dims
+  let strides := computeStrides shape
+  let fa := data.foldl (fun acc v => acc.push v) (FloatArray.mkEmpty data.length)
+  { data := fa, shape := shape, strides := strides, offset := 0 }
+
+private def flattenNested2 (rows : List (List Float)) : List Float :=
+  rows.foldl (fun acc row => acc ++ row) []
+
+private def flattenNested3 (xss : List (List (List Float))) : List Float :=
+  xss.foldl (fun acc xs => acc ++ flattenNested2 xs) []
+
+instance {d : Dim} : Coe (List Float) (Tensor [d]) where
+  coe data := Tensor.ofData data
+
+instance {d0 d1 : Dim} : Coe (List (List Float)) (Tensor [d0, d1]) where
+  coe data := Tensor.ofData (flattenNested2 data)
+
+instance {d0 d1 d2 : Dim} : Coe (List (List (List Float))) (Tensor [d0, d1, d2]) where
+  coe data := Tensor.ofData (flattenNested3 data)
+
+instance {d : Dim} : Coe (List Nat) (Tensor [d]) where
+  coe data := Tensor.ofData (data.map Float.ofNat)
+
+instance {d0 d1 : Dim} : Coe (List (List Nat)) (Tensor [d0, d1]) where
+  coe data := Tensor.ofData (flattenNested2 (data.map (·.map Float.ofNat)))
+
+instance {d0 d1 d2 : Dim} : Coe (List (List (List Nat))) (Tensor [d0, d1, d2]) where
+  coe data := Tensor.ofData (flattenNested3 (data.map (·.map (·.map Float.ofNat))))
+
 def Tensor.get! {dims : DimList} (t : Tensor dims) (indices : Array Nat) : Float :=
   let flat := flatIndex indices t.strides t.offset
   t.data.get! flat
@@ -258,8 +288,7 @@ def di := dim 2
 def dj := dim 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
-def small : Tensor [di, dj] :=
-  Tensor.ofFn fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1)
+def small : Tensor [di, dj] := [[1,2,3],[4,5,6]]
 
 -- Transpose — same data, permuted strides
 def smallT : Tensor [dj, di] :=
@@ -270,16 +299,13 @@ def j := dim 4
 def k := dim 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
-def a : Tensor [i, k] :=
-  Tensor.ofFn fun idx => Float.ofNat (idx[0]! * 3 + idx[1]! + 1)
+def a : Tensor [i, k] := [[1,2,3],[4,5,6]]
 
 -- 3×4 matrix [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
-def bmat : Tensor [k, j] :=
-  Tensor.ofFn fun idx => Float.ofNat (idx[0]! * 4 + idx[1]! + 10)
+def bmat : Tensor [k, j] := [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 
-set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
-  Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
+  Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
 
 -- Image — sizes live in the dims
 def b := dim 32
