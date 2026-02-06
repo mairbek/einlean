@@ -25,6 +25,11 @@ structure Dim where
 
 def dim (id : Nat) (size : Nat) : Dim := ⟨[⟨id, size⟩]⟩
 
+open Lean in
+scoped macro "dim!" size:term : term => do
+  let some pos := (← getRef).getPos? | Macro.throwError "dim!: no source position"
+  `(dim $(quote pos.byteIdx) $size)
+
 def Dim.size (d : Dim) : Nat :=
   d.atoms.foldl (fun acc a => acc * a.size) 1
 
@@ -424,8 +429,8 @@ def Tensor.einsum {A B : DimList} {Out : Type}
 -- EXAMPLES
 -- ============================================
 
-def di := dim 0 2
-def dj := dim 1 3
+def di := dim! 2
+def dj := dim! 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
 def small : Tensor [di, dj] := [[1,2,3],[4,5,6]]
@@ -434,9 +439,9 @@ def small : Tensor [di, dj] := [[1,2,3],[4,5,6]]
 def smallT : Tensor [dj, di] :=
   small.rearrangeBy fun (i, j) => (j, i)
 
-def i := dim 2 2
-def j := dim 3 4
-def k := dim 4 3
+def i := dim! 2
+def j := dim! 4
+def k := dim! 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
 def a : Tensor [i, k] := [[1,2,3],[4,5,6]]
@@ -449,10 +454,10 @@ def cmat : Tensor [i, j] :=
   Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
 
 -- Image — sizes live in the dims
-def b := dim 5 32
-def h := dim 6 224
-def w := dim 7 224
-def c := dim 8 3
+def b := dim! 32
+def h := dim! 224
+def w := dim! 224
+def c := dim! 3
 
 def image : Tensor [b, h, w, c] := Tensor.zeros
 
@@ -470,8 +475,8 @@ def transposed2 : Tensor [b, c, h, w] := image.rearrange
 def merged2 : Tensor [h, bw, c] := image.rearrange
 
 -- Small merge test: 2×3 -> 6 (flatten)
-def db := dim 9 2
-def dw := dim 10 3
+def db := dim! 2
+def dw := dim! 3
 def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 
 #eval small      -- [[1, 2, 3], [4, 5, 6]]
@@ -485,5 +490,15 @@ def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 -- Lambda-free transpose
 def smallT2 : Tensor [dj, di] := small.rearrange
 #eval smallT2    -- [[1, 4], [2, 5], [3, 6]]
+
+def f (shape_i shape_j : Nat) := Id.run do
+  let ddi := dim! shape_i
+  let ddj := dim! shape_j
+
+  let flat2d : Tensor [ddi, ddj] := Tensor.zeros
+  return flat2d
+
+def wow := f 3 2
+#eval wow
 
 end Einlean
