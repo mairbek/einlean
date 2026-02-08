@@ -82,83 +82,90 @@ def shapeOf (dims : DimList) : Array Nat :=
 -- TENSORS
 -- ============================================
 
-structure Tensor (dims : DimList) where
-  data : FloatArray
+structure Tensor (dims : DimList) (α : Type := Int) where
+  data : Array α
   shape : Array Nat
   strides : Array Nat
   offset : Nat := 0
 
-def Tensor.ofFn {dims : DimList} (f : Array Nat → Float) : Tensor dims := Id.run do
+def Tensor.ofFn {dims : DimList} {α : Type} (f : Array Nat → α) : Tensor dims α := Id.run do
   let shape := shapeOf dims
   let strides := computeStrides shape
   let total := totalSize shape
-  let mut data := FloatArray.mkEmpty total
+  let mut data : Array α := Array.mkEmpty total
   for flat in [:total] do
     let idx := toMultiIndex flat shape
     data := data.push (f idx)
   return { data := data, shape := shape, strides := strides, offset := 0 }
 
-def Tensor.zeros {dims : DimList} : Tensor dims :=
-  Tensor.ofFn (fun _ => 0.0)
+def Tensor.zeros {dims : DimList} {α : Type} [Zero α] : Tensor dims α :=
+  Tensor.ofFn (fun _ => 0)
 
-def Tensor.fill {dims : DimList} (v : Float) : Tensor dims :=
+def Tensor.fill {dims : DimList} {α : Type} (v : α) : Tensor dims α :=
   Tensor.ofFn (fun _ => v)
 
-def Tensor.arange {dims : DimList} (start : Float := 0.0) (step : Float := 1.0) : Tensor dims := Id.run do
+def Tensor.arange {dims : DimList} {α : Type} [Add α] [OfNat α 0] [OfNat α 1]
+    (start : α := 0) (step : α := 1) : Tensor dims α := Id.run do
   let shape := shapeOf dims
   let strides := computeStrides shape
   let total := totalSize shape
-  let mut data := FloatArray.mkEmpty total
+  let mut data : Array α := Array.mkEmpty total
+  let mut cur := start
   for flat in [:total] do
-    data := data.push (start + step * Float.ofNat flat)
+    let _ := flat
+    data := data.push cur
+    cur := cur + step
   return { data := data, shape := shape, strides := strides, offset := 0 }
 
-def Tensor.arange1d (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+def Tensor.arange1d {α : Type} [Add α] [OfNat α 0] [OfNat α 1]
+    (d : Dim) (start : α := 0) (step : α := 1) : Tensor [d] α :=
   Tensor.arange (dims := [d]) start step
 
-def arange {dims : DimList} (start : Float := 0.0) (step : Float := 1.0) : Tensor dims :=
+def arange {dims : DimList} {α : Type} [Add α] [OfNat α 0] [OfNat α 1]
+    (start : α := 0) (step : α := 1) : Tensor dims α :=
   Tensor.arange (dims := dims) start step
 
-def arange1d (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+def arange1d {α : Type} [Add α] [OfNat α 0] [OfNat α 1]
+    (d : Dim) (start : α := 0) (step : α := 1) : Tensor [d] α :=
   Tensor.arange1d d start step
 
-def Tensor.ofData {dims : DimList} (data : List Float) : Tensor dims :=
+def Tensor.ofData {dims : DimList} {α : Type} (data : List α) : Tensor dims α :=
   let shape := shapeOf dims
   let strides := computeStrides shape
-  let fa := data.foldl (fun acc v => acc.push v) (FloatArray.mkEmpty data.length)
+  let fa := data.foldl (fun acc v => acc.push v) (Array.mkEmpty data.length)
   { data := fa, shape := shape, strides := strides, offset := 0 }
 
-private def flattenNested2 (rows : List (List Float)) : List Float :=
+private def flattenNested2 {α : Type} (rows : List (List α)) : List α :=
   rows.foldl (fun acc row => acc ++ row) []
 
-private def flattenNested3 (xss : List (List (List Float))) : List Float :=
+private def flattenNested3 {α : Type} (xss : List (List (List α))) : List α :=
   xss.foldl (fun acc xs => acc ++ flattenNested2 xs) []
 
-instance {d : Dim} : Coe (List Float) (Tensor [d]) where
+instance {d : Dim} : Coe (List Float) (Tensor [d] Float) where
   coe data := Tensor.ofData data
 
-instance {d0 d1 : Dim} : Coe (List (List Float)) (Tensor [d0, d1]) where
+instance {d0 d1 : Dim} : Coe (List (List Float)) (Tensor [d0, d1] Float) where
   coe data := Tensor.ofData (flattenNested2 data)
 
-instance {d0 d1 d2 : Dim} : Coe (List (List (List Float))) (Tensor [d0, d1, d2]) where
+instance {d0 d1 d2 : Dim} : Coe (List (List (List Float))) (Tensor [d0, d1, d2] Float) where
   coe data := Tensor.ofData (flattenNested3 data)
 
 instance {d : Dim} : Coe (List Nat) (Tensor [d]) where
-  coe data := Tensor.ofData (data.map Float.ofNat)
+  coe data := Tensor.ofData (data.map Int.ofNat)
 
 instance {d0 d1 : Dim} : Coe (List (List Nat)) (Tensor [d0, d1]) where
-  coe data := Tensor.ofData (flattenNested2 (data.map (·.map Float.ofNat)))
+  coe data := Tensor.ofData (flattenNested2 (data.map (·.map Int.ofNat)))
 
 instance {d0 d1 d2 : Dim} : Coe (List (List (List Nat))) (Tensor [d0, d1, d2]) where
-  coe data := Tensor.ofData (flattenNested3 (data.map (·.map (·.map Float.ofNat))))
+  coe data := Tensor.ofData (flattenNested3 (data.map (·.map (·.map Int.ofNat))))
 
-def Tensor.get! {dims : DimList} (t : Tensor dims) (indices : Array Nat) : Float :=
+def Tensor.get! {dims : DimList} {α : Type} [Inhabited α] (t : Tensor dims α) (indices : Array Nat) : α :=
   let flat := flatIndex indices t.strides t.offset
   t.data.get! flat
 
-def Tensor.toList {dims : DimList} (t : Tensor dims) : List Float := Id.run do
+def Tensor.toList {dims : DimList} {α : Type} [Inhabited α] (t : Tensor dims α) : List α := Id.run do
   let total := totalSize t.shape
-  let mut result : Array Float := Array.mkEmpty total
+  let mut result : Array α := Array.mkEmpty total
   for flat in [:total] do
     let idx := toMultiIndex flat t.shape
     let physFlat := flatIndex idx t.strides t.offset
@@ -169,21 +176,18 @@ def Tensor.toList {dims : DimList} (t : Tensor dims) : List Float := Id.run do
 -- TENSOR FORMATTING
 -- ============================================
 
-private def formatFloat (f : Float) : String :=
-  if f == f.floor then
-    if f < 0 then "-" ++ toString ((-f).toUInt64)
-    else toString (f.toUInt64)
-  else
-    toString f
+private def formatElem {α : Type} [ToString α] (x : α) : String :=
+  toString x
 
-private partial def formatSubtensor (data : Array Float) (offset : Nat) (shape : List Nat) (indent : Nat) : String × Nat :=
+private partial def formatSubtensor {α : Type} [ToString α] [Inhabited α]
+    (data : Array α) (offset : Nat) (shape : List Nat) (indent : Nat) : String × Nat :=
   match shape with
-  | [] => (formatFloat (data.get! offset), offset + 1)
+  | [] => (formatElem (data.get! offset), offset + 1)
   | [n] => Id.run do
     let mut s := "["
     for idx in [:n] do
       if idx > 0 then s := s ++ ", "
-      s := s ++ formatFloat (data.get! (offset + idx))
+      s := s ++ formatElem (data.get! (offset + idx))
     return (s ++ "]", offset + n)
   | n :: rest => Id.run do
     let innerSize := rest.foldl (· * ·) 1
@@ -197,15 +201,15 @@ private partial def formatSubtensor (data : Array Float) (offset : Nat) (shape :
       s := s ++ sub
     return (s ++ "]", offset + n * innerSize)
 
-def Tensor.format {dims : DimList} (t : Tensor dims) : String :=
+def Tensor.format {dims : DimList} {α : Type} [ToString α] [Inhabited α] (t : Tensor dims α) : String :=
   let data := t.toList.toArray
   let (s, _) := formatSubtensor data 0 t.shape.toList 0
   s
 
-instance {dims : DimList} : Repr (Tensor dims) where
+instance {dims : DimList} {α : Type} [ToString α] [Inhabited α] : Repr (Tensor dims α) where
   reprPrec t _ := .text t.format
 
-instance {dims : DimList} : ToString (Tensor dims) where
+instance {dims : DimList} {α : Type} [ToString α] [Inhabited α] : ToString (Tensor dims α) where
   toString := Tensor.format
 
 -- ============================================
@@ -263,8 +267,8 @@ instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : H
   outMapping := (HasDims.outMapping (Out := α) (dims := dims)) ++
     (HasDims.outMapping (Out := β) (dims := dims))
 
-def Tensor.rearrangeCore {inDims outDims : DimList}
-    (t : Tensor inDims) (mapping : Array (Array Nat)) : Tensor outDims := Id.run do
+def Tensor.rearrangeCore {inDims outDims : DimList} {α : Type} [Inhabited α]
+    (t : Tensor inDims α) (mapping : Array (Array Nat)) : Tensor outDims α := Id.run do
   let outLen := mapping.size
   -- Build output shape: product of input sizes for each output axis
   let mut outShape := Array.mkArray outLen 0
@@ -276,7 +280,7 @@ def Tensor.rearrangeCore {inDims outDims : DimList}
     outShape := outShape.set! oAxis sz
   let outStrides := computeStrides outShape
   let outTotal := totalSize outShape
-  let mut resultData := FloatArray.mkEmpty outTotal
+  let mut resultData : Array α := Array.mkEmpty outTotal
   for outFlat in [:outTotal] do
     let outIdx := toMultiIndex outFlat outShape
     -- Build input multi-index by decomposing each output index
@@ -300,7 +304,7 @@ def Tensor.rearrangeCore {inDims outDims : DimList}
 
 def Tensor.rearrangeBy {dims : DimList} {Out : Type}
     [h : HasDims Out dims]
-    (t : Tensor dims) (_f : SlotTuple dims → Out) : Tensor h.outDims :=
+    {α : Type} [Inhabited α] (t : Tensor dims α) (_f : SlotTuple dims → Out) : Tensor h.outDims α :=
   Tensor.rearrangeCore t (h.outMapping.map (·.toArray) |>.toArray)
 
 -- ============================================
@@ -342,12 +346,12 @@ def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run 
     result := result.push axes
   return result
 
-def Tensor.rearrange {inDims outDims : DimList} (t : Tensor inDims)
-    (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims :=
+def Tensor.rearrange {inDims outDims : DimList} {α : Type} [Inhabited α] (t : Tensor inDims α)
+    (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims α :=
   Tensor.rearrangeCore t (computeAtomMapping inDims outDims)
 
-def Tensor.reshape {inDims outDims : DimList} (t : Tensor inDims)
-    (_valid : validReshape inDims outDims = true := by decide) : Tensor outDims :=
+def Tensor.reshape {inDims outDims : DimList} {α : Type} (t : Tensor inDims α)
+    (_valid : validReshape inDims outDims = true := by decide) : Tensor outDims α :=
   let outShape := shapeOf outDims
   { data := t.data
     shape := outShape
@@ -378,10 +382,11 @@ instance (A B : DimList) {α β : Type} [EinsumOut α A B] [EinsumOut β A B] : 
   outSrc := (EinsumOut.outSrc (Out := α) (A := A) (B := B)) ++
     (EinsumOut.outSrc (Out := β) (A := A) (B := B))
 
-def Tensor.einsum {A B : DimList} {Out : Type}
+def Tensor.einsum {A B : DimList} {Out : Type} {α : Type}
     [h : EinsumOut Out A B]
-    (x : Tensor A) (y : Tensor B)
-    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims := Id.run do
+    [Inhabited α] [Zero α] [Add α] [Mul α]
+    (x : Tensor A α) (y : Tensor B α)
+    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims α := Id.run do
   let outSrc := h.outSrc.toArray
 
   -- Build output shape
@@ -427,10 +432,10 @@ def Tensor.einsum {A B : DimList} {Out : Type}
   let outTotal := totalSize outShape
   let contrTotal := totalSize contrShape
 
-  let mut resultData := FloatArray.mkEmpty outTotal
+  let mut resultData : Array α := Array.mkEmpty outTotal
   for outFlat in [:outTotal] do
     let outIdx := toMultiIndex outFlat outShape
-    let mut acc : Float := 0.0
+    let mut acc : α := Zero.zero
     for contrFlat in [:contrTotal] do
       let contrIdx := toMultiIndex contrFlat contrShape
       -- Build A multi-index
@@ -462,7 +467,7 @@ def di := dim! 2
 def dj := dim! 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
-def small : Tensor [di, dj] := [[1,2,3],[4,5,6]]
+def small : Tensor [di, dj] := arange 1
 
 -- Transpose (lambda-based) — same data, permuted strides
 def smallT : Tensor [dj, di] :=
@@ -473,10 +478,10 @@ def j := dim! 4
 def k := dim! 3
 
 -- 2×3 matrix [[1,2,3],[4,5,6]]
-def a : Tensor [i, k] := [[1,2,3],[4,5,6]]
+def a : Tensor [i, k] := arange 1
 
 -- 3×4 matrix [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
-def bmat : Tensor [k, j] := [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
+def bmat : Tensor [k, j] := arange 10
 
 set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
@@ -504,16 +509,16 @@ def transposed2 : Tensor [b, c, h, w] := image.rearrange
 def merged2 : Tensor [h, bw, c] := image.rearrange
 
 -- Small merge test: 2×3 -> 6 (flatten)
-def db := dim! 2
-def dw := dim! 3
-def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
-
 #eval small      -- [[1, 2, 3], [4, 5, 6]]
 #eval smallT     -- [[1, 4], [2, 5], [3, 6]]
 #eval cmat       -- [[92, 98, 104, 110], [218, 233, 248, 263]]
-#eval flat2d     -- [[1, 2, 3], [4, 5, 6]]
-#eval flat2d.rearrangeBy fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
-#eval flat2d.rearrangeBy fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
+
+def db := dim! 2
+def dw := dim! 3
+def example2d : Tensor [db, dw] := arange 1
+#eval example2d     -- [[1, 2, 3], [4, 5, 6]]
+#eval example2d.rearrangeBy fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
+#eval example2d.rearrangeBy fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
 
 
 def dflat := di * dj
@@ -521,7 +526,7 @@ def flatRange : Tensor [dflat] := arange
 def reshapedRange : Tensor [di, dj] := flatRange.reshape
 def reshapedRange2 : Tensor [di, dj] := (arange (dims := [di * dj])).reshape
 def targetDirect : Tensor [di, dj] := arange
-def targetDirectStep : Tensor [di, dj] := arange 10.0 0.5
+def targetDirectStep : Tensor [di, dj] Float := arange 10.0 0.5
 
 -- This would fail (different atom identities):
 -- def badDx := dim! 6
