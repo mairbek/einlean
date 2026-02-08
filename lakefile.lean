@@ -6,6 +6,9 @@ package einlean where
     ⟨`autoImplicit, false⟩
   ]
 
+require proofwidgets from git
+  "https://github.com/leanprover-community/ProofWidgets4" @ "v0.0.47"
+
 @[default_target]
 lean_lib Einlean where
-  roots := #[`Einlean]
+  roots := #[`Einlean, `Einlean.Viz, `Einlean.Viz.Demo]
