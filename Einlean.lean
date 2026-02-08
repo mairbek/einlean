@@ -491,14 +491,4 @@ def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 def smallT2 : Tensor [dj, di] := small.rearrange
 #eval smallT2    -- [[1, 4], [2, 5], [3, 6]]
 
-def f (shape_i shape_j : Nat) := Id.run do
-  let ddi := dim! shape_i
-  let ddj := dim! shape_j
-
-  let flat2d : Tensor [ddi, ddj] := Tensor.zeros
-  return flat2d
-
-def wow := f 3 2
-#eval wow
-
 end Einlean
