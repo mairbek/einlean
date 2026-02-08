@@ -104,11 +104,23 @@ def Tensor.zeros {dims : DimList} : Tensor dims :=
 def Tensor.fill {dims : DimList} (v : Float) : Tensor dims :=
   Tensor.ofFn (fun _ => v)
 
-def Tensor.arange (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
-  Tensor.ofFn (fun idx => start + step * Float.ofNat (idx[0]!))
+def Tensor.arange {dims : DimList} (start : Float := 0.0) (step : Float := 1.0) : Tensor dims := Id.run do
+  let shape := shapeOf dims
+  let strides := computeStrides shape
+  let total := totalSize shape
+  let mut data := FloatArray.mkEmpty total
+  for flat in [:total] do
+    data := data.push (start + step * Float.ofNat flat)
+  return { data := data, shape := shape, strides := strides, offset := 0 }
 
-def arange (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
-  Tensor.arange d start step
+def Tensor.arange1d (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+  Tensor.arange (dims := [d]) start step
+
+def arange {dims : DimList} (start : Float := 0.0) (step : Float := 1.0) : Tensor dims :=
+  Tensor.arange (dims := dims) start step
+
+def arange1d (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+  Tensor.arange1d d start step
 
 def Tensor.ofData {dims : DimList} (data : List Float) : Tensor dims :=
   let shape := shapeOf dims
@@ -505,18 +517,22 @@ def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 
 
 def dflat := di * dj
-def flatRange : Tensor [dflat] := arange dflat
+def flatRange : Tensor [dflat] := arange
 def reshapedRange : Tensor [di, dj] := flatRange.reshape
-def reshapedRange2 : Tensor [di, dj] := (arange (di * dj)).reshape
+def reshapedRange2 : Tensor [di, dj] := (arange (dims := [di * dj])).reshape
+def targetDirect : Tensor [di, dj] := arange
+def targetDirectStep : Tensor [di, dj] := arange 10.0 0.5
 
 -- This would fail (different atom identities):
 -- def badDx := dim! 6
--- def badFlat : Tensor [badDx] := arange badDx
+-- def badFlat : Tensor [badDx] := arange1d badDx
 -- def badTarget : Tensor [di, dj] := badFlat.reshape
 
 #eval flatRange      -- [0, 1, 2, 3, 4, 5]
 #eval reshapedRange  -- [[0, 1, 2], [3, 4, 5]]
 #eval reshapedRange2 -- [[0, 1, 2], [3, 4, 5]]
+#eval targetDirect   -- [[0, 1, 2], [3, 4, 5]]
+#eval targetDirectStep -- [[10, 10.500000, 11], [11.500000, 12, 12.500000]]
 
 
 -- Lambda-free transpose
