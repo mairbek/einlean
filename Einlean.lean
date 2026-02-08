@@ -104,6 +104,12 @@ def Tensor.zeros {dims : DimList} : Tensor dims :=
 def Tensor.fill {dims : DimList} (v : Float) : Tensor dims :=
   Tensor.ofFn (fun _ => v)
 
+def Tensor.arange (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+  Tensor.ofFn (fun idx => start + step * Float.ofNat (idx[0]!))
+
+def arange (d : Dim) (start : Float := 0.0) (step : Float := 1.0) : Tensor [d] :=
+  Tensor.arange d start step
+
 def Tensor.ofData {dims : DimList} (data : List Float) : Tensor dims :=
   let shape := shapeOf dims
   let strides := computeStrides shape
@@ -299,6 +305,9 @@ def validRearrange (inDims outDims : DimList) : Bool :=
   inA.all (fun a => outA.any (· == a)) &&
   outA.all (fun a => inA.any (· == a))
 
+def validReshape (inDims outDims : DimList) : Bool :=
+  allAtoms inDims == allAtoms outDims
+
 /-- For each output dim, find which input axis indices contribute to it by matching atom IDs. -/
 def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run do
   -- Build flat list of (inputAxisIndex, atom) pairs
@@ -324,6 +333,14 @@ def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run 
 def Tensor.rearrange {inDims outDims : DimList} (t : Tensor inDims)
     (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims :=
   Tensor.rearrangeCore t (computeAtomMapping inDims outDims)
+
+def Tensor.reshape {inDims outDims : DimList} (t : Tensor inDims)
+    (_valid : validReshape inDims outDims = true := by decide) : Tensor outDims :=
+  let outShape := shapeOf outDims
+  { data := t.data
+    shape := outShape
+    strides := computeStrides outShape
+    offset := t.offset }
 
 -- ============================================
 -- EINSUM (position-based)
@@ -485,6 +502,21 @@ def flat2d : Tensor [db, dw] := [[1,2,3],[4,5,6]]
 #eval flat2d     -- [[1, 2, 3], [4, 5, 6]]
 #eval flat2d.rearrangeBy fun (b, w) => b * w -- [1, 2, 3, 4, 5, 6]
 #eval flat2d.rearrangeBy fun (b, w) => w * b -- [1, 4, 2, 5, 3, 6]
+
+
+def dflat := di * dj
+def flatRange : Tensor [dflat] := arange dflat
+def reshapedRange : Tensor [di, dj] := flatRange.reshape
+def reshapedRange2 : Tensor [di, dj] := (arange (di * dj)).reshape
+
+-- This would fail (different atom identities):
+-- def badDx := dim! 6
+-- def badFlat : Tensor [badDx] := arange badDx
+-- def badTarget : Tensor [di, dj] := badFlat.reshape
+
+#eval flatRange      -- [0, 1, 2, 3, 4, 5]
+#eval reshapedRange  -- [[0, 1, 2], [3, 4, 5]]
+#eval reshapedRange2 -- [[0, 1, 2], [3, 4, 5]]
 
 
 -- Lambda-free transpose
