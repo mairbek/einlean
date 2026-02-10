@@ -141,20 +141,4 @@ def elabImgTensorCmd : CommandElab := fun
       stx
   | stx => throwError "Unexpected syntax {stx}."
 
-syntax (name := imgTensorIOCmd) "#imgtensor_io " term : command
-
-@[command_elab imgTensorIOCmd]
-def elabImgTensorIOCmd : CommandElab := fun
-  | stx@`(#imgtensor_io $t:term) => do
-    let htX ← liftTermElabM <|
-      ProofWidgets.HtmlCommand.evalCommandMHtml <|
-      ← ``(ProofWidgets.HtmlEval.eval
-            ((($t) >>= fun x => pure (Einlean.imgTensor x)) : IO ProofWidgets.Html))
-    let ht ← htX
-    liftCoreM <| Widget.savePanelWidgetInfo
-      (hash HtmlDisplayPanel.javascript)
-      (return json% { html: $(← rpcEncode ht) })
-      stx
-  | stx => throwError "Unexpected syntax {stx}."
-
 end Einlean
