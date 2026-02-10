@@ -8,9 +8,9 @@ namespace Einlean
 open ProofWidgets
 
 structure VizConfig where
-  pixelSize : Nat := 5
-  columns : Nat := 3
-  gap : Nat := 6
+  pixelSize : Nat := 1
+  columns : Nat := 0
+  gap : Nat := 2
   showBorders : Bool := true
   deriving Repr
 
@@ -39,7 +39,7 @@ private def mkRect (x y w h : Nat) (fill : String) : Html :=
 private def mkOutline (x y w h : Nat) : Html :=
   Html.element "rect"
     #[("x", jStr s!"{x}"), ("y", jStr s!"{y}"), ("width", jStr s!"{w}"),
-      ("height", jStr s!"{h}"), ("fill", jStr "none"), ("stroke", jStr "#1f2937"),
+      ("height", jStr s!"{h}"), ("fill", jStr "none"), ("stroke", jStr "#000000"),
       ("strokeWidth", jStr "1")]
     #[]
 
@@ -90,7 +90,7 @@ def Tensor.toHtmlBatch {b w h c : Dim} {α : Type}
   if cN != 3 then
     return unsupported s!"#imgtensor expects c=3 for batch images, got c={cN}"
   let px := cfg.pixelSize
-  let cols := if cfg.columns == 0 then 1 else cfg.columns
+  let cols := if cfg.columns == 0 then bN else cfg.columns
   let rows := (bN + cols - 1) / cols
   let tileW := wN * px
   let tileH := hN * px
@@ -134,6 +134,22 @@ def elabImgTensorCmd : CommandElab := fun
     let htX ← liftTermElabM <|
       ProofWidgets.HtmlCommand.evalCommandMHtml <|
       ← ``(ProofWidgets.HtmlEval.eval (Einlean.imgTensor $t))
+    let ht ← htX
+    liftCoreM <| Widget.savePanelWidgetInfo
+      (hash HtmlDisplayPanel.javascript)
+      (return json% { html: $(← rpcEncode ht) })
+      stx
+  | stx => throwError "Unexpected syntax {stx}."
+
+syntax (name := imgTensorIOCmd) "#imgtensor_io " term : command
+
+@[command_elab imgTensorIOCmd]
+def elabImgTensorIOCmd : CommandElab := fun
+  | stx@`(#imgtensor_io $t:term) => do
+    let htX ← liftTermElabM <|
+      ProofWidgets.HtmlCommand.evalCommandMHtml <|
+      ← ``(ProofWidgets.HtmlEval.eval
+            ((($t) >>= fun x => pure (Einlean.imgTensor x)) : IO ProofWidgets.Html))
     let ht ← htX
     liftCoreM <| Widget.savePanelWidgetInfo
       (hash HtmlDisplayPanel.javascript)

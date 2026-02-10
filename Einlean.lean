@@ -88,6 +88,9 @@ structure Tensor (dims : DimList) (α : Type := Int) where
   strides : Array Nat
   offset : Nat := 0
 
+instance {dims : DimList} {α : Type} [Inhabited α] : Inhabited (Tensor dims α) where
+  default := { data := #[], shape := #[], strides := #[], offset := 0 }
+
 def Tensor.ofFn {dims : DimList} {α : Type} (f : Array Nat → α) : Tensor dims α := Id.run do
   let shape := shapeOf dims
   let strides := computeStrides shape
@@ -97,6 +100,11 @@ def Tensor.ofFn {dims : DimList} {α : Type} (f : Array Nat → α) : Tensor dim
     let idx := toMultiIndex flat shape
     data := data.push (f idx)
   return { data := data, shape := shape, strides := strides, offset := 0 }
+
+def Tensor.ofArray {dims : DimList} {α : Type} (data : Array α) : Tensor dims α :=
+  let shape := shapeOf dims
+  let strides := computeStrides shape
+  { data := data, shape := shape, strides := strides, offset := 0 }
 
 def Tensor.zeros {dims : DimList} {α : Type} [Zero α] : Tensor dims α :=
   Tensor.ofFn (fun _ => 0)
@@ -130,10 +138,8 @@ def arange1d {α : Type} [Add α] [OfNat α 0] [OfNat α 1]
   Tensor.arange1d d start step
 
 def Tensor.ofData {dims : DimList} {α : Type} (data : List α) : Tensor dims α :=
-  let shape := shapeOf dims
-  let strides := computeStrides shape
   let fa := data.foldl (fun acc v => acc.push v) (Array.mkEmpty data.length)
-  { data := fa, shape := shape, strides := strides, offset := 0 }
+  Tensor.ofArray (dims := dims) fa
 
 private def flattenNested2 {α : Type} (rows : List (List α)) : List α :=
   rows.foldl (fun acc row => acc ++ row) []
@@ -162,6 +168,22 @@ instance {d0 d1 d2 : Dim} : Coe (List (List (List Nat))) (Tensor [d0, d1, d2]) w
 def Tensor.get! {dims : DimList} {α : Type} [Inhabited α] (t : Tensor dims α) (indices : Array Nat) : α :=
   let flat := flatIndex indices t.strides t.offset
   t.data.get! flat
+
+def Tensor.slice0 {d : Dim} {ds : DimList} {α : Type}
+    [Inhabited α] (t : Tensor (d :: ds) α) (i : Nat) : Tensor ds α :=
+  if i < t.shape[0]! then
+    let outShape := t.shape.extract 1 t.shape.size
+    let outStrides := t.strides.extract 1 t.strides.size
+    { data := t.data
+      shape := outShape
+      strides := outStrides
+      offset := t.offset + i * t.strides[0]! }
+  else
+    panic! s!"Tensor index out of bounds: index {i}, size {t.shape[0]!}"
+
+instance {d : Dim} {ds : DimList} {α : Type} [Inhabited α] :
+    GetElem (Tensor (d :: ds) α) Nat (Tensor ds α) (fun _ i => i < i + 1) where
+  getElem t i _ := t.slice0 i
 
 def Tensor.toList {dims : DimList} {α : Type} [Inhabited α] (t : Tensor dims α) : List α := Id.run do
   let total := totalSize t.shape
