@@ -30,9 +30,9 @@ private def channel (rgb : Rgb) (ch : Nat) : Int :=
   else Int.ofNat rgb.b
 
 def demoSize : Nat := 8
-def b1 : Dim := dim! 3
-def b2 : Dim := dim! 2
-def b : Dim := b1 * b2
+def b : Dim := dim! 6
+def b1 : Dim := b.factor! 3
+def b2 : Dim := b.factor! 2
 def w : Dim := digitW demoSize
 def h : Dim := digitH demoSize
 
@@ -62,20 +62,16 @@ def img0 : Tensor [w, h, c] Int := ims[0]
 def img0T : Tensor [h, w, c] Int := img0.rearrange
 def composeBH : Tensor [w, b * h, c] Int := ims.rearrange
 def composeBW : Tensor [b * w, h, c] Int := ims.rearrange
-
-/-- Equivalent to einops: (b1 b2) w h c -> b1 b2 w h c. -/
-def splitB : Tensor [b1, b2, w, h, c] Int := ims.reshape
-
-/-- Equivalent to einops: (b1 b2) w h c -> (b1 w) (b2 h) c. -/
-def compose3x2Split : Tensor [b1 * w, b2 * h, c] Int := splitB.rearrange
-def compose2x3Split : Tensor [b2 * w, b1 * h, c] Int := splitB.rearrange
+def ims2 : Tensor [b1 * b2, w, h, c] Int := ims
+def composed : Tensor [b1 * w, b2 * h, c] Int := ims.rearrange
+def composed2 : Tensor [b2 * w, b1 * h, c] Int := ims.rearrange
 
 #imgtensor ims
 #imgtensor img0
 #imgtensor img0T
 #imgtensor composeBH
 #imgtensor composeBW
-#imgtensor compose3x2Split
-#imgtensor compose2x3Split
+#imgtensor composed
+#imgtensor composed2
 
 end EinleanDemo

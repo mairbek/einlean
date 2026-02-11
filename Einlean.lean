@@ -17,13 +17,14 @@ namespace Einlean
 structure Atom where
   id : Nat
   size : Nat
+  rank : Nat := 0
   deriving Repr, Inhabited, BEq, DecidableEq
 
 structure Dim where
   atoms : List Atom
   deriving Repr, Inhabited, BEq, DecidableEq
 
-def dim (id : Nat) (size : Nat) : Dim := ⟨[⟨id, size⟩]⟩
+def dim (id : Nat) (size : Nat) : Dim := ⟨[{ id := id, size := size, rank := 0 }]⟩
 
 open Lean in
 scoped macro "dim!" size:term : term => do
@@ -33,8 +34,32 @@ scoped macro "dim!" size:term : term => do
 def Dim.size (d : Dim) : Nat :=
   d.atoms.foldl (fun acc a => acc * a.size) 1
 
+private def normalizeAtoms (atoms : List Atom) : List Atom :=
+  let step (revAcc : List Atom) (a : Atom) : List Atom :=
+    match revAcc with
+    | [] => [a]
+    | prev :: rest =>
+        if prev.id == a.id then
+          { id := prev.id, size := prev.size * a.size, rank := 0 } :: rest
+        else
+          a :: revAcc
+  (atoms.foldl step []).reverse
+
 instance : Mul Dim where
-  mul d1 d2 := ⟨d1.atoms ++ d2.atoms⟩
+  mul d1 d2 := ⟨normalizeAtoms (d1.atoms ++ d2.atoms)⟩
+
+def Dim.factorAt (d : Dim) (k tag : Nat)
+    (_single : d.atoms.length = 1 := by decide)
+    (_pos : k > 0 := by decide)
+    (_div : d.size % k = 0 := by decide) : Dim :=
+  let a := d.atoms.get! 0
+  ⟨[{ id := a.id, size := k, rank := tag + 1 }]⟩
+
+def Dim.factor! (d : Dim) (k : Nat)
+    (_single : d.atoms.length = 1 := by decide)
+    (_pos : k > 0 := by decide)
+    (_div : d.size % k = 0 := by decide) : Dim :=
+  Dim.factorAt d k k _single _pos _div
 
 abbrev DimList := List Dim
 
@@ -336,12 +361,21 @@ def Tensor.rearrangeBy {dims : DimList} {Out : Type}
 def allAtoms (dims : DimList) : List Atom :=
   dims.foldl (fun acc d => acc ++ d.atoms) []
 
+private def uniqueIds (atoms : List Atom) : List Nat :=
+  atoms.foldl (fun ids a => if ids.any (· == a.id) then ids else ids ++ [a.id]) []
+
+private def productForId (atoms : List Atom) (id : Nat) : Nat :=
+  atoms.foldl (fun acc a => if a.id == id then acc * a.size else acc) 1
+
 def validRearrange (inDims outDims : DimList) : Bool :=
   let inA := allAtoms inDims
   let outA := allAtoms outDims
-  inA.length == outA.length &&
-  inA.all (fun a => outA.any (· == a)) &&
-  outA.all (fun a => inA.any (· == a))
+  let inIds := uniqueIds inA
+  let outIds := uniqueIds outA
+  inIds.length == outIds.length &&
+  inIds.all (fun id => outIds.any (· == id)) &&
+  outIds.all (fun id => inIds.any (· == id)) &&
+  inIds.all (fun id => productForId inA id == productForId outA id)
 
 def validReshape (inDims outDims : DimList) : Bool :=
   allAtoms inDims == allAtoms outDims
@@ -368,9 +402,129 @@ def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run 
     result := result.push axes
   return result
 
+private def atomDigitsFromAxisIndex (idx : Nat) (atomSizes : Array Nat) : Array Nat := Id.run do
+  let n := atomSizes.size
+  let mut out := Array.mkArray n 0
+  let mut rem := idx
+  for rev in [:n] do
+    let j := n - 1 - rev
+    let s := atomSizes[j]!
+    if s > 0 then
+      out := out.set! j (rem % s)
+      rem := rem / s
+    else
+      out := out.set! j 0
+  return out
+
+private def axisIndexFromAtomDigits (digits atomSizes : Array Nat) : Nat := Id.run do
+  let mut acc := 0
+  for i in [:digits.size] do
+    acc := acc * atomSizes[i]! + digits[i]!
+  return acc
+
+private def positionsForId (atoms : Array Atom) (id : Nat) : Array Nat := Id.run do
+  let mut ps : Array Nat := #[]
+  for i in [:atoms.size] do
+    if atoms[i]!.id == id then
+      ps := ps.push i
+  return ps
+
+private def sortPositionsByRank (atoms : Array Atom) (ps : Array Nat) : Array Nat :=
+  let rec insert (p : Nat) (acc : List Nat) : List Nat :=
+    match acc with
+    | [] => [p]
+    | q :: qs =>
+        if atoms[p]!.rank >= atoms[q]!.rank then
+          p :: acc
+        else
+          q :: insert p qs
+  (ps.toList.foldl (fun acc p => insert p acc) []).toArray
+
+private structure RootSpec where
+  id : Nat
+  inPos : Array Nat
+  outPos : Array Nat
+  inSizes : Array Nat
+  outSizes : Array Nat
+
+private def buildRootSpecs (inAtoms outAtoms : Array Atom) : Array RootSpec := Id.run do
+  let mut ids : Array Nat := #[]
+  for a in inAtoms do
+    if !(ids.any (· == a.id)) then
+      ids := ids.push a.id
+  let mut specs : Array RootSpec := #[]
+  for id in ids do
+    let inPos := sortPositionsByRank inAtoms (positionsForId inAtoms id)
+    let outPos := sortPositionsByRank outAtoms (positionsForId outAtoms id)
+    let inSizes := inPos.map (fun p => inAtoms[p]!.size)
+    let outSizes := outPos.map (fun p => outAtoms[p]!.size)
+    specs := specs.push { id := id, inPos := inPos, outPos := outPos, inSizes := inSizes, outSizes := outSizes }
+  return specs
+
+private def Tensor.rearrangeByRoots {inDims outDims : DimList} {α : Type} [Inhabited α]
+    (t : Tensor inDims α) : Tensor outDims α := Id.run do
+  let outShape := shapeOf outDims
+  let outTotal := totalSize outShape
+  let inAtoms := (allAtoms inDims).toArray
+  let outAtoms := (allAtoms outDims).toArray
+  let rootSpecs := buildRootSpecs inAtoms outAtoms
+
+  let mut inAtomStarts : Array Nat := Array.mkArray inDims.length 0
+  let mut cur := 0
+  for i in [:inDims.length] do
+    inAtomStarts := inAtomStarts.set! i cur
+    cur := cur + inDims[i]!.atoms.length
+
+  let mut resultData : Array α := Array.mkEmpty outTotal
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+
+    let mut outAtomDigits : Array Nat := Array.mkEmpty outAtoms.size
+    for ax in [:outDims.length] do
+      let d := outDims[ax]!
+      let sizes := d.atoms.map (·.size) |>.toArray
+      let digs := atomDigitsFromAxisIndex outIdx[ax]! sizes
+      for j in [:digs.size] do
+        outAtomDigits := outAtomDigits.push digs[j]!
+
+    let mut inAtomDigits := Array.mkArray inAtoms.size 0
+    for spec in rootSpecs do
+      let mut coord := 0
+      for j in [:spec.outPos.size] do
+        coord := coord * spec.outSizes[j]! + outAtomDigits[spec.outPos[j]!]!
+
+      let mut rem := coord
+      for rev in [:spec.inPos.size] do
+        let j := spec.inPos.size - 1 - rev
+        let s := spec.inSizes[j]!
+        if s > 0 then
+          inAtomDigits := inAtomDigits.set! (spec.inPos[j]!) (rem % s)
+          rem := rem / s
+        else
+          inAtomDigits := inAtomDigits.set! (spec.inPos[j]!) 0
+
+    let mut inIdx := Array.mkArray inDims.length 0
+    for ax in [:inDims.length] do
+      let d := inDims[ax]!
+      let start := inAtomStarts[ax]!
+      let atomCount := d.atoms.length
+      let mut digs : Array Nat := Array.mkEmpty atomCount
+      for j in [:atomCount] do
+        digs := digs.push (inAtomDigits[start + j]!)
+      let sizes := d.atoms.map (·.size) |>.toArray
+      inIdx := inIdx.set! ax (axisIndexFromAtomDigits digs sizes)
+
+    let flat := flatIndex inIdx t.strides t.offset
+    resultData := resultData.push (t.data.get! flat)
+
+  return { data := resultData
+           shape := outShape
+           strides := computeStrides outShape
+           offset := 0 }
+
 def Tensor.rearrange {inDims outDims : DimList} {α : Type} [Inhabited α] (t : Tensor inDims α)
     (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims α :=
-  Tensor.rearrangeCore t (computeAtomMapping inDims outDims)
+  Tensor.rearrangeByRoots t
 
 def Tensor.reshape {inDims outDims : DimList} {α : Type} (t : Tensor inDims α)
     (_valid : validReshape inDims outDims = true := by decide) : Tensor outDims α :=
@@ -565,5 +719,27 @@ def targetDirectStep : Tensor [di, dj] Float := arange 10.0 0.5
 -- Lambda-free transpose
 def smallT2 : Tensor [dj, di] := small.rearrange
 #eval smallT2    -- [[1, 4], [2, 5], [3, 6]]
+
+namespace batch
+-- batch transformations
+def b := dim! 6
+def w := dim! 2
+def h := dim! 2
+
+def b1 := b.factor! 3
+def b2 := b.factor! 2
+
+def example2d : Tensor [b, w, h] := arange 1
+def rep : Tensor [b1 * w, b2 * h] := example2d.rearrange
+def rep2 : Tensor [b2 * w, b1 * h] := example2d.rearrange
+def rep3 : Tensor [b2 * h, b1 * w] := example2d.rearrange
+
+#eval example2d
+#eval rep
+#eval rep2
+#eval rep3
+
+end batch
+
 
 end Einlean
