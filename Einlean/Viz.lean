@@ -62,11 +62,11 @@ private def readRgb {dims : DimList} {α : Type}
 private def unsupported (msg : String) : Html :=
   Html.element "p" #[] #[Html.text msg]
 
-def Tensor.toHtmlImage {w h c : Dim} {α : Type}
+def Tensor.toHtmlImage {h w c : Dim} {α : Type}
     [ToByte α] [Inhabited α]
-    (t : Tensor [w, h, c] α) (cfg : VizConfig := {}) : Html := Id.run do
-  let wN := t.shape[0]!
-  let hN := t.shape[1]!
+    (t : Tensor [h, w, c] α) (cfg : VizConfig := {}) : Html := Id.run do
+  let hN := t.shape[0]!
+  let wN := t.shape[1]!
   let cN := t.shape[2]!
   if cN != 3 then
     return unsupported s!"#imgtensor expects c=3 for images, got c={cN}"
@@ -74,18 +74,18 @@ def Tensor.toHtmlImage {w h c : Dim} {α : Type}
   let mut children : Array Html := #[]
   for y in [:hN] do
     for x in [:wN] do
-      let (r, g, b) := readRgb t #[x, y]
+      let (r, g, b) := readRgb t #[y, x]
       children := children.push (mkRect (x * px) (y * px) px px (rgbString r g b))
   if cfg.showBorders then
     children := children.push (mkOutline 0 0 (wN * px) (hN * px))
   return mkSvg (wN * px) (hN * px) children
 
-def Tensor.toHtmlBatch {b w h c : Dim} {α : Type}
+def Tensor.toHtmlBatch {b h w c : Dim} {α : Type}
     [ToByte α] [Inhabited α]
-    (t : Tensor [b, w, h, c] α) (cfg : VizConfig := {}) : Html := Id.run do
+    (t : Tensor [b, h, w, c] α) (cfg : VizConfig := {}) : Html := Id.run do
   let bN := t.shape[0]!
-  let wN := t.shape[1]!
-  let hN := t.shape[2]!
+  let hN := t.shape[1]!
+  let wN := t.shape[2]!
   let cN := t.shape[3]!
   if cN != 3 then
     return unsupported s!"#imgtensor expects c=3 for batch images, got c={cN}"
@@ -104,7 +104,7 @@ def Tensor.toHtmlBatch {b w h c : Dim} {α : Type}
     let oy := row * (tileH + cfg.gap)
     for y in [:hN] do
       for x in [:wN] do
-        let (r, g, b) := readRgb t #[bi, x, y]
+        let (r, g, b) := readRgb t #[bi, y, x]
         children := children.push (mkRect (ox + x * px) (oy + y * px) px px (rgbString r g b))
     if cfg.showBorders then
       children := children.push (mkOutline ox oy tileW tileH)
@@ -113,12 +113,12 @@ def Tensor.toHtmlBatch {b w h c : Dim} {α : Type}
 class ImgTensorRenderable (β : Type) where
   toHtml : β → Html
 
-instance {w h c : Dim} {α : Type} [ToByte α] [Inhabited α] :
-    ImgTensorRenderable (Tensor [w, h, c] α) where
-  toHtml t := t.toHtmlImage
+instance {h w c : Dim} {α : Type} [ToByte α] [Inhabited α] :
+    ImgTensorRenderable (Tensor [h, w, c] α) where
+  toHtml t := t.toHtmlImage { pixelSize := 1, columns := 0, gap := 2, showBorders := true }
 
-instance {b w h c : Dim} {α : Type} [ToByte α] [Inhabited α] :
-    ImgTensorRenderable (Tensor [b, w, h, c] α) where
+instance {b h w c : Dim} {α : Type} [ToByte α] [Inhabited α] :
+    ImgTensorRenderable (Tensor [b, h, w, c] α) where
   toHtml t := t.toHtmlBatch
 
 def imgTensor {β : Type} [ImgTensorRenderable β] (x : β) : Html :=

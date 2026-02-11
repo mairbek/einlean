@@ -723,14 +723,14 @@ def smallT2 : Tensor [dj, di] := small.rearrange
 namespace batch
 -- batch transformations
 def b := dim! 6
-def w := dim! 2
 def h := dim! 2
+def w := dim! 2
 
 def b1 := b.factor! 3
 def b2 := b.factor! 2
 
-def example2d : Tensor [b, w, h] := arange 1
-def rep : Tensor [b1 * w, b2 * h] := example2d.rearrange
+def example2d : Tensor [b, h, w] := arange 1
+def rep : Tensor [b1 * h, b2 * w] := example2d.rearrange
 def rep2 : Tensor [b2 * w, b1 * h] := example2d.rearrange
 def rep3 : Tensor [b2 * h, b1 * w] := example2d.rearrange
 

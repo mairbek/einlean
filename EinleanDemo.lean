@@ -45,11 +45,11 @@ private def bgFor (d : Nat) : Rgb :=
   | 4 => { r := 85,  g := 25,  b := 125 }
   | _ => { r := 25,  g := 95,  b := 110 }
 
-def ims : Tensor [b, w, h, c] Int :=
-  Tensor.ofFn (dims := [b, w, h, c]) fun idx =>
+def ims : Tensor [b, h, w, c] Int :=
+  Tensor.ofFn (dims := [b, h, w, c]) fun idx =>
     let bi := idx[0]!
-    let x := idx[1]!
-    let y := idx[2]!
+    let y := idx[1]!
+    let x := idx[2]!
     let ch := idx[3]!
     let fg : Rgb := { r := 255, g := 255, b := 255 }
     let bg := bgFor (bi % 6)
@@ -58,13 +58,13 @@ def ims : Tensor [b, w, h, c] Int :=
     else
       channel bg ch
 
-def img0 : Tensor [w, h, c] Int := ims[0]
-def img0T : Tensor [h, w, c] Int := img0.rearrange
-def composeBH : Tensor [w, b * h, c] Int := ims.rearrange
-def composeBW : Tensor [b * w, h, c] Int := ims.rearrange
-def ims2 : Tensor [b1 * b2, w, h, c] Int := ims
-def composed : Tensor [b1 * w, b2 * h, c] Int := ims.rearrange
-def composed2 : Tensor [b2 * w, b1 * h, c] Int := ims.rearrange
+def img0 : Tensor [h, w, c] Int := ims[0]
+def img0T : Tensor [w, h, c] Int := img0.rearrange
+def composeBH : Tensor [h, b * w, c] Int := ims.rearrange
+def composeBW : Tensor [b * h, w, c] Int := ims.rearrange
+def ims2 : Tensor [b1 * b2, h, w, c] Int := ims
+def composed : Tensor [b1 * h, b2 * w, c] Int := ims.rearrange
+def composed2 : Tensor [b2 * h, b1 * w, c] Int := ims.rearrange
 
 #imgtensor ims
 #imgtensor img0
