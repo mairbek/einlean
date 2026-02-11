@@ -2,189 +2,225 @@
 
 Compile-time verifiable tensor operations in Lean 4, einops-style.
 
-## Goal
+This document describes the current implementation in `Einlean.lean`.
+
+## High-Level Architecture
+
+Einlean has two layers:
+
+1. **Type-level dimension algebra** (`Atom`, `Dim`, `DimList`) used to prove shape compatibility.
+2. **Runtime tensor layout** (`Tensor`) that stores contiguous data plus shape/stride metadata.
+
+Core transforms (`rearrange`, `reshape`, `einsum`) use compile-time constraints, then execute explicit index-mapping loops at runtime.
+
+## Dimension Model
+
+### Atom and Dim
 
 ```lean
-def image : Tensor [batch, height, width, channels] := ...
-
--- Rearrange with compile-time verification
-def transposed : Tensor [batch, channels, height, width] :=
-  image.rearrange fun (b, h, w, c) => (b, c, h, w)
-
--- Type error: output dims don't match declared type
-def bad : Tensor [batch, batch, height, width] :=
-  image.rearrange fun (b, h, w, c) => (b, c, h, w)  -- won't compile
-```
-
-## Core Types
-
-### Dimension
-
-```lean
-structure Dim where
+structure Atom where
   id : Nat
+  size : Nat
+  rank : Nat := 0
+
+structure Dim where
+  atoms : List Atom
 ```
 
-Unique identifier for each dimension axis.
+- A `Dim` is a product of one or more `Atom`s.
+- `id` is identity, `size` is extent, `rank` is used to order factored atoms.
 
-### Tensor
+### Constructors and Composition
 
 ```lean
-structure Tensor (dims : List Dim) where
-  data : FloatArray
-  sizes : Fin dims.length → Nat
+def dim (id : Nat) (size : Nat) : Dim :=
+  ⟨[{ id := id, size := size, rank := 0 }]⟩
+
+scoped macro "dim!" size:term : term => ...
+
+instance : Mul Dim where
+  mul d1 d2 := ⟨normalizeAtoms (d1.atoms ++ d2.atoms)⟩
 ```
 
-Tensor type is parameterized by its dimension list.
+- `dim!` creates source-position-unique IDs at elaboration time.
+- `d1 * d2` concatenates atom lists, then normalizes adjacent equal IDs.
+- `Dim.size` multiplies atom sizes.
 
-### Slot
+### Factoring
 
 ```lean
-structure Slot (dims : List Dim) (i : Fin dims.length)
+def Dim.factor! (d : Dim) (k : Nat) ... : Dim
 ```
 
-A type-level marker representing position `i` in dimension list `dims`. Carries no runtime data—exists only for the type system.
+- `factor!` splits a 1-atom dim into ranked atoms to enable reversible batch-style regrouping.
 
-Key property: `Slot dims i` knows both:
-- Which dimension list it belongs to
-- Which position it occupies
-
-## The Rearrange Pattern
-
-### Input: Slot Tuple
-
-For a tensor with `dims = [d0, d1, d2]`, construct:
+## Tensor Runtime Model
 
 ```lean
-SlotTuple dims = Slot dims 0 × Slot dims 1 × Slot dims 2
+structure Tensor (dims : DimList) (α : Type := Int) where
+  data : Array α
+  shape : Array Nat
+  strides : Array Nat
+  offset : Nat := 0
 ```
 
-User receives this as `(s0, s1, s2)` in their lambda.
+- `dims` is the compile-time shape descriptor.
+- `shape`/`strides`/`offset` drive runtime indexing.
+- Backing storage is a flat `Array α`.
 
-### Output: Reordered Slots
+Key helpers:
 
-User returns slots in new order:
+- `computeStrides`, `flatIndex`, `toMultiIndex`, `shapeOf`, `totalSize`
+- constructors: `ofFn`, `ofArray`, `ofData`, `fill`, `zeros`, `arange`
+- views/access: `get!`, `slice0`, `GetElem` instance, `toList`
 
-```lean
-fun (s0, s1, s2) => (s2, s0, s1)
-```
+## Rearrange: Two APIs
 
-Return type: `Slot dims 2 × Slot dims 0 × Slot dims 1`
-
-### Extract Output Dims
-
-A type class extracts the dimension list from the output type:
+### 1) Lambda-based (`rearrangeBy`)
 
 ```lean
-class HasDims (α : Type) (dims : List Dim) where
-  toDims : List Dim
-
--- Base case: single slot
-instance : HasDims (Slot dims i) dims where
-  toDims := [dims.get i]
-
--- Inductive case: product
-instance [HasDims α dims] [HasDims β dims] : HasDims (α × β) dims where
-  toDims := HasDims.toDims α ++ HasDims.toDims β
-```
-
-For `Slot dims 2 × Slot dims 0 × Slot dims 1`, this yields `[d2, d0, d1]`.
-
-### Rearrange Signature
-
-```lean
-def Tensor.rearrange
-    {dims : List Dim}
-    {Out : Type}
+def Tensor.rearrangeBy {dims : DimList} {Out : Type}
     [h : HasDims Out dims]
-    (t : Tensor dims)
-    (f : SlotTuple dims → Out)
-    : Tensor h.toDims
+    (t : Tensor dims α) (_f : SlotTuple dims → Out)
+    : Tensor h.outDims α
 ```
 
-## Type-Level Flow
+Supporting pieces:
 
-```
-Tensor [batch, height, width, channels]
-           ↓
-   SlotTuple [b, h, w, c]
-           ↓
-   fun (b, h, w, c) => (b, c, h, w)
-           ↓
-   Output type: Slot 0 × Slot 3 × Slot 1 × Slot 2
-           ↓
-   HasDims extracts: [batch, channels, height, width]
-           ↓
-Tensor [batch, channels, height, width]
-```
+- `Slot dims i`: zero-sized positional marker.
+- `MergedSlot dims is`: marker for merged output axes.
+- `HasDims Out dims` computes:
+  - `outDims : DimList`
+  - `outMapping : List (List Nat)` (which input axes feed each output axis)
 
-## Examples
+Execution path:
 
-### 1. Define a Tensor
+1. `HasDims` derives `outMapping` from the lambda return type.
+2. `Tensor.rearrangeCore` builds output shape and remaps indices using that mapping.
+
+This path is expressive and supports syntax like:
 
 ```lean
-def b : Dim := freshDim 0
-def h : Dim := freshDim 1
-def w : Dim := freshDim 2
-def c : Dim := freshDim 3
-
-def image : Tensor [b, h, w, c] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == b then some 32 else
-      if d == h then some 224 else
-      if d == w then some 224 else
-      if d == c then some 3 else
-      none
-  }
+image.rearrangeBy fun (b, h, w, c) => (h, b * w, c)
 ```
 
-### 2. Rearrange a Tensor
+### 2) Lambda-free (`rearrange`)
 
 ```lean
+def Tensor.rearrange {inDims outDims : DimList} (t : Tensor inDims α)
+    (_valid : validRearrange inDims outDims = true := by decide)
+    : Tensor outDims α
+```
+
+Compile-time guard:
+
+```lean
+def validRearrange (inDims outDims : DimList) : Bool
+```
+
+It checks:
+
+- same set of atom IDs
+- same per-ID size products
+
+Runtime path (`rearrangeByRoots`):
+
+1. Flatten input/output dims to atom streams.
+2. Group atoms by root `id` into `RootSpec`.
+3. Convert each output index -> output atom digits.
+4. Transport coordinates per root into input atom digits.
+5. Reassemble input axis indices and read source element.
+
+This enables rearrangements/merges/splits without an explicit lambda when the output type is known.
+
+## Reshape
+
+```lean
+def Tensor.reshape {inDims outDims : DimList} (t : Tensor inDims α)
+    (_valid : validReshape inDims outDims = true := by decide)
+    : Tensor outDims α
+```
+
+`validReshape` requires exact atom-stream equality (`allAtoms inDims == allAtoms outDims`).
+
+- This is stricter than `rearrange`.
+- Data is not copied; only metadata (`shape`, `strides`) is rebuilt.
+
+## Einsum (Current)
+
+```lean
+def Tensor.einsum {A B : DimList} {Out : Type}
+    [h : EinsumOut Out A B]
+    (x : Tensor A α) (y : Tensor B α)
+    (_f : SlotTuple A → SlotTuple B → Out)
+    : Tensor h.outDims α
+```
+
+`EinsumOut` infers output dims from slot positions chosen in the lambda result.
+
+Runtime algorithm:
+
+1. Build output shape from selected A/B axes.
+2. Mark which A/B axes are output axes.
+3. Remaining axes become contraction axes (paired positionally).
+4. Iterate over output indices and contraction indices.
+5. Accumulate `x[aIdx] * y[bIdx]`.
+
+This supports matrix multiply and batch-style contractions with compile-time output typing.
+
+## Visualization
+
+`Einlean/Viz.lean` provides:
+
+- `Tensor.toHtmlImage` for `[h, w, c]` tensors
+- `Tensor.toHtmlBatch` for `[b, h, w, c]` tensors
+- `#imgtensor` command (ProofWidgets-based) for inline rendering in Lean editors
+
+## Usage Examples (Current API)
+
+```lean
+def b := dim! 32
+def h := dim! 224
+def w := dim! 224
+def c := dim! 3
+def image : Tensor [b, h, w, c] := Tensor.zeros
+
+-- Lambda-based
 def transposed : Tensor [b, c, h, w] :=
-  image.rearrange fun (b, h, w, c) => (b, c, h, w)
-```
+  image.rearrangeBy fun (b, h, w, c) => (b, c, h, w)
 
-### 3. Matmul via Einsum
+-- Lambda-free (type drives transform)
+def bw := b * w
+def merged : Tensor [h, bw, c] := image.rearrange
 
-```lean
-def i : Dim := freshDim 10
-def j : Dim := freshDim 11
-def k : Dim := freshDim 12
-
-def a : Tensor [i, k] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == i then some 2 else
-      if d == k then some 3 else
-      none
-  }
-
-def bmat : Tensor [k, j] :=
-  { data := FloatArray.mkEmpty 0
-    sizes := fun d =>
-      if d == k then some 3 else
-      if d == j then some 4 else
-      none
-  }
-
+-- Einsum matmul
+def i := dim! 2
+def j := dim! 4
+def k := dim! 3
+def a : Tensor [i, k] := arange 1
+def bmat : Tensor [k, j] := arange 10
 def cmat : Tensor [i, j] :=
-  Tensor.einsum a bmat (fun (i, k) (k, j) => (i, j))
+  Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
 ```
 
-## Implementation Tasks
+## Current Guarantees and Limits
 
-1. **Define `Slot`** - zero-sized type with position index
-2. **Define `SlotTuple`** - product type for n slots
-3. **Build slot values** - construct the tuple to pass to user's lambda
-4. **Define `HasDims`** - type class to extract dims from output
-5. **Define `Tensor.rearrange`** - tie it together
+Guarantees:
 
-## Future Extensions
+- Output tensor types are compile-time checked.
+- `rearrange`/`reshape` reject invalid dimension relations via `by decide` proofs.
+- Dim composition carries structure through atom IDs/ranks.
 
-- **Reduce**: `fun (b, h, w, c) => (b, c)` — sum over h, w
-- **Split**: `fun (b, hw, c) => (b, h, w, c)` — split dimension
-- **Merge**: `fun (b, h, w, c) => (b, hw, c)` — merge dimensions
-- **Broadcast**: introduce new dimensions
-- **Einsum**: `a[i,j] * b[j,k] → c[i,k]`
+Current limits:
+
+- Einsum axis matching is positional and currently less general than full symbolic einsum.
+- Rearrange/einsum rely on specific slot encodings and typeclass-driven shape extraction.
+
+## Near-Term Direction
+
+Likely next steps (see `futureideas.md`):
+
+- richer literal syntax with compile-time shape checks
+- more ergonomic lambda-free APIs
+- extending dim algebra toward crop/resize/broadcast-style transforms
+- more complete einsum semantics (diagonal/repeated labels, broader contraction rules)
