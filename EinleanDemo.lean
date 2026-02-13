@@ -74,4 +74,32 @@ def composed2 : Tensor [b2 * h, b1 * w, c] Int := ims.rearrange
 #imgtensor composed
 #imgtensor composed2
 
+-- ============================================
+-- REDUCE DEMOS
+-- ============================================
+
+-- Average over batch dimension: [b=6, h, w, c] -> [h, w, c]
+-- Blends all 6 digit images into one averaged image
+set_option linter.unusedVariables false in
+def batchMean : Tensor [h, w, c] Int :=
+  ims.reduceBy .mean fun (b, h, w, c) => (h, w, c)
+
+#imgtensor batchMean
+
+-- Max over batch: [b=6, h, w, c] -> [h, w, c]
+-- Brightest pixel from any batch image
+set_option linter.unusedVariables false in
+def batchMax : Tensor [h, w, c] Int :=
+  ims.reduceBy .max fun (b, h, w, c) => (h, w, c)
+
+#imgtensor batchMax
+
+-- Reduce + rearrange: average over width -> [b, h, c] then view as image
+-- Creates a "column average" strip per batch element
+set_option linter.unusedVariables false in
+def widthMean : Tensor [b, h, c] Int :=
+  ims.reduceBy .mean fun (b, h, w, c) => (b, h, c)
+
+#eval widthMean.shape
+
 end EinleanDemo

@@ -260,6 +260,14 @@ instance {dims : DimList} {α : Type} [ToString α] [Inhabited α] : ToString (T
   toString := Tensor.format
 
 -- ============================================
+-- REDUCE OPS
+-- ============================================
+
+inductive ReduceOp where
+  | sum | mean | max | min
+  deriving Repr, BEq
+
+-- ============================================
 -- SLOTS
 -- ============================================
 
@@ -313,6 +321,10 @@ instance (dims : DimList) {α β : Type} [HasDims α dims] [HasDims β dims] : H
     (HasDims.outDims (Out := β) (dims := dims))
   outMapping := (HasDims.outMapping (Out := α) (dims := dims)) ++
     (HasDims.outMapping (Out := β) (dims := dims))
+
+instance (dims : DimList) : HasDims PUnit dims where
+  outDims := []
+  outMapping := []
 
 def Tensor.rearrangeCore {inDims outDims : DimList} {α : Type} [Inhabited α]
     (t : Tensor inDims α) (mapping : Array (Array Nat)) : Tensor outDims α := Id.run do
@@ -380,6 +392,14 @@ def validRearrange (inDims outDims : DimList) : Bool :=
 def validReshape (inDims outDims : DimList) : Bool :=
   allAtoms inDims == allAtoms outDims
 
+def validReduce (inDims outDims : DimList) : Bool :=
+  let inA := allAtoms inDims
+  let outA := allAtoms outDims
+  let outIds := uniqueIds outA
+  let inIds := uniqueIds inA
+  outIds.all (fun id => inIds.any (· == id)) &&
+  outIds.all (fun id => productForId outA id == productForId inA id)
+
 /-- For each output dim, find which input axis indices contribute to it by matching atom IDs. -/
 def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run do
   -- Build flat list of (inputAxisIndex, atom) pairs
@@ -401,6 +421,22 @@ def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run 
             axes := axes.push axIdx
     result := result.push axes
   return result
+
+/-- Returns (outMapping, reducedAxes) for a reduce operation.
+    outMapping: for each output dim, which input axes map to it.
+    reducedAxes: input axes not present in any output dim. -/
+def computeReduceInfo (inDims outDims : DimList) : Array (Array Nat) × Array Nat := Id.run do
+  let mapping := computeAtomMapping inDims outDims
+  let mut usedAxes : Array Bool := Array.mkArray inDims.length false
+  for oIdx in [:mapping.size] do
+    let axes := mapping[oIdx]!
+    for aIdx in [:axes.size] do
+      usedAxes := usedAxes.set! (axes[aIdx]!) true
+  let mut reduced : Array Nat := #[]
+  for p in [:inDims.length] do
+    if !(usedAxes[p]!) then
+      reduced := reduced.push p
+  return (mapping, reduced)
 
 private def atomDigitsFromAxisIndex (idx : Nat) (atomSizes : Array Nat) : Array Nat := Id.run do
   let n := atomSizes.size
@@ -636,6 +672,103 @@ def Tensor.einsum {A B : DimList} {Out : Type} {α : Type}
            offset := 0 }
 
 -- ============================================
+-- REDUCE
+-- ============================================
+
+private def Tensor.reduceGeneric {inDims outDims : DimList} {α : Type} [Inhabited α]
+    (t : Tensor inDims α)
+    (mapping : Array (Array Nat))
+    (reducedAxes : Array Nat)
+    (init : α) (combine : α → α → α) (finalize : α → Nat → α)
+    : Tensor outDims α := Id.run do
+  let outShape := shapeOf outDims
+  let outTotal := totalSize outShape
+  let reducedShape := reducedAxes.map (fun p => t.shape[p]!)
+  let reducedTotal := totalSize reducedShape
+  let mut resultData : Array α := Array.mkEmpty outTotal
+  if reducedTotal == 0 then
+    for _ in [:outTotal] do
+      resultData := resultData.push init
+    return { data := resultData, shape := outShape,
+             strides := computeStrides outShape, offset := 0 }
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+    -- First reduced element to initialize accumulator
+    let mut inIdx := Array.mkArray inDims.length 0
+    -- Fill output-mapped axes
+    for oAxis in [:mapping.size] do
+      let axes := mapping[oAxis]!
+      let mut remainder := outIdx[oAxis]!
+      for rev in [:axes.size] do
+        let aIdx := axes.size - 1 - rev
+        let p := axes[aIdx]!
+        let sz := t.shape[p]!
+        inIdx := inIdx.set! p (remainder % sz)
+        remainder := remainder / sz
+    -- Fill reduced axes with first element (all zeros already)
+    let flat0 := flatIndex inIdx t.strides t.offset
+    let mut acc := t.data.get! flat0
+    -- Iterate remaining reduced elements
+    for redFlat in [1:reducedTotal] do
+      let redIdx := toMultiIndex redFlat reducedShape
+      let mut inIdx2 := inIdx
+      for rAxis in [:reducedAxes.size] do
+        inIdx2 := inIdx2.set! (reducedAxes[rAxis]!) (redIdx[rAxis]!)
+      let flat := flatIndex inIdx2 t.strides t.offset
+      let val := t.data.get! flat
+      acc := combine acc val
+    acc := finalize acc reducedTotal
+    resultData := resultData.push acc
+  return { data := resultData, shape := outShape,
+           strides := computeStrides outShape, offset := 0 }
+
+private def natToAlpha {α : Type} [Zero α] [Add α] [OfNat α 1] (n : Nat) : α := Id.run do
+  let mut acc : α := 0
+  for _ in [:n] do
+    acc := acc + (OfNat.ofNat 1 : α)
+  return acc
+
+private def dispatchReduce {inDims outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [HDiv α α α] [Ord α] [OfNat α 1]
+    (t : Tensor inDims α) (op : ReduceOp)
+    (mapping : Array (Array Nat)) (reducedAxes : Array Nat)
+    : Tensor outDims α :=
+  match op with
+  | .sum => Tensor.reduceGeneric t mapping reducedAxes 0
+      (· + ·) (fun a _ => a)
+  | .mean => Tensor.reduceGeneric t mapping reducedAxes 0
+      (· + ·) (fun a n => a / natToAlpha n)
+  | .max => Tensor.reduceGeneric t mapping reducedAxes 0
+      (fun a b => if compare a b == .lt then b else a) (fun a _ => a)
+  | .min => Tensor.reduceGeneric t mapping reducedAxes 0
+      (fun a b => if compare a b == .gt then b else a) (fun a _ => a)
+
+def Tensor.reduceBy {dims : DimList} {Out : Type}
+    [h : HasDims Out dims]
+    {α : Type} [Inhabited α] [Zero α] [Add α] [HDiv α α α] [Ord α] [OfNat α 1]
+    (t : Tensor dims α) (op : ReduceOp) (_f : SlotTuple dims → Out)
+    : Tensor h.outDims α := Id.run do
+  let mapping := h.outMapping.map (·.toArray) |>.toArray
+  let mut usedAxes : Array Bool := Array.mkArray dims.length false
+  for oIdx in [:mapping.size] do
+    let axes := mapping[oIdx]!
+    for aIdx in [:axes.size] do
+      usedAxes := usedAxes.set! (axes[aIdx]!) true
+  let mut reducedAxes : Array Nat := #[]
+  for p in [:dims.length] do
+    if !(usedAxes[p]!) then
+      reducedAxes := reducedAxes.push p
+  return dispatchReduce t op mapping reducedAxes
+
+def Tensor.reduce {inDims outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [HDiv α α α] [Ord α] [OfNat α 1]
+    (t : Tensor inDims α) (op : ReduceOp)
+    (_valid : validReduce inDims outDims = true := by decide)
+    : Tensor outDims α :=
+  let (mapping, reducedAxes) := computeReduceInfo inDims outDims
+  dispatchReduce t op mapping reducedAxes
+
+-- ============================================
 -- EXAMPLES
 -- ============================================
 
@@ -741,5 +874,50 @@ def rep3 : Tensor [b2 * h, b1 * w] := example2d.rearrange
 
 end batch
 
+-- ============================================
+-- REDUCE EXAMPLES
+-- ============================================
+
+-- small = [[1,2,3],[4,5,6]], shape [di=2, dj=3]
+
+-- Sum over columns: [2,3] -> [2]
+-- Expected: [6, 15]  (1+2+3=6, 4+5+6=15)
+set_option linter.unusedVariables false in
+def rowSums : Tensor [di] := small.reduceBy .sum fun (i, j) => i
+#eval rowSums
+
+-- Sum over rows: [2,3] -> [3]
+-- Expected: [5, 7, 9]  (1+4=5, 2+5=7, 3+6=9)
+set_option linter.unusedVariables false in
+def colSums : Tensor [dj] := small.reduceBy .sum fun (i, j) => j
+#eval colSums
+
+-- Mean over columns: [2,3] -> [2]
+-- Expected: [2, 5]  (6/3=2, 15/3=5)
+set_option linter.unusedVariables false in
+def rowMeans : Tensor [di] := small.reduceBy .mean fun (i, j) => i
+#eval rowMeans
+
+-- Max over columns: [2,3] -> [2]
+-- Expected: [3, 6]
+set_option linter.unusedVariables false in
+def rowMax : Tensor [di] := small.reduceBy .max fun (i, j) => i
+#eval rowMax
+
+-- Min over rows: [2,3] -> [3]
+-- Expected: [1, 2, 3]
+set_option linter.unusedVariables false in
+def colMin : Tensor [dj] := small.reduceBy .min fun (i, j) => j
+#eval colMin
+
+-- Type-driven reduce (no lambda): [2,3] -> [2]
+def rowSums2 : Tensor [di] := small.reduce .sum
+#eval rowSums2
+
+-- Full reduction to scalar: [2,3] -> []
+-- Expected: [21]  (sum of all elements)
+set_option linter.unusedVariables false in
+def totalSum : Tensor [] := small.reduceBy .sum fun (i, j) => ()
+#eval totalSum
 
 end Einlean
