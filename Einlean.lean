@@ -871,7 +871,6 @@ def a : Tensor [i, k] := arange 1
 -- 3×4 matrix [[10,11,12,13],[14,15,16,17],[18,19,20,21]]
 def bmat : Tensor [k, j] := arange 10
 
-set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
   Tensor.einsumBy a bmat (fun (i, _) (_, j) => (i, j))
 
@@ -883,12 +882,9 @@ def cmat2 : Tensor [i, j] := Tensor.einsum (a, bmat)
 
 -- Unary counterparts via rearrange/reduce
 def smallTU : Tensor [dj, di] := small.rearrange
-set_option linter.unusedVariables false in
-def rowSumsU : Tensor [di] := small.reduceBy .sum fun (i, j) => i
-set_option linter.unusedVariables false in
-def colSumsU : Tensor [dj] := small.reduceBy .sum fun (i, j) => j
-set_option linter.unusedVariables false in
-def totalSumU : Tensor [] := small.reduceBy .sum fun (i, j) => ()
+def rowSumsU : Tensor [di] := small.reduceBy .sum fun (i, _) => i
+def colSumsU : Tensor [dj] := small.reduceBy .sum fun (_, j) => j
+def totalSumU : Tensor [] := small.reduceBy .sum fun (_, _) => ()
 
 -- Scalar-output dot products and Hadamard product
 def dotV1 : Tensor [dj] := arange 1
@@ -1009,32 +1005,27 @@ end batch
 
 -- Sum over columns: [2,3] -> [2]
 -- Expected: [6, 15]  (1+2+3=6, 4+5+6=15)
-set_option linter.unusedVariables false in
-def rowSums : Tensor [di] := small.reduceBy .sum fun (i, j) => i
+def rowSums : Tensor [di] := small.reduceBy .sum fun (i, _) => i
 #eval rowSums
 
 -- Sum over rows: [2,3] -> [3]
 -- Expected: [5, 7, 9]  (1+4=5, 2+5=7, 3+6=9)
-set_option linter.unusedVariables false in
-def colSums : Tensor [dj] := small.reduceBy .sum fun (i, j) => j
+def colSums : Tensor [dj] := small.reduceBy .sum fun (_, j) => j
 #eval colSums
 
 -- Mean over columns: [2,3] -> [2]
 -- Expected: [2, 5]  (6/3=2, 15/3=5)
-set_option linter.unusedVariables false in
-def rowMeans : Tensor [di] := small.reduceBy .mean fun (i, j) => i
+def rowMeans : Tensor [di] := small.reduceBy .mean fun (i, _) => i
 #eval rowMeans
 
 -- Max over columns: [2,3] -> [2]
 -- Expected: [3, 6]
-set_option linter.unusedVariables false in
-def rowMax : Tensor [di] := small.reduceBy .max fun (i, j) => i
+def rowMax : Tensor [di] := small.reduceBy .max fun (i, _) => i
 #eval rowMax
 
 -- Min over rows: [2,3] -> [3]
 -- Expected: [1, 2, 3]
-set_option linter.unusedVariables false in
-def colMin : Tensor [dj] := small.reduceBy .min fun (i, j) => j
+def colMin : Tensor [dj] := small.reduceBy .min fun (_, j) => j
 #eval colMin
 
 -- Type-driven reduce (no lambda): [2,3] -> [2]
@@ -1043,8 +1034,7 @@ def rowSums2 : Tensor [di] := small.reduce .sum
 
 -- Full reduction to scalar: [2,3] -> []
 -- Expected: [21]  (sum of all elements)
-set_option linter.unusedVariables false in
-def totalSum : Tensor [] := small.reduceBy .sum fun (i, j) => ()
+def totalSum : Tensor [] := small.reduceBy .sum fun (_, _) => ()
 #eval totalSum
 
 end Einlean
