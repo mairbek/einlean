@@ -655,16 +655,19 @@ private def buildAxisPlan (dims : DimList) (outLabels reducedLabels : Array Dim)
     | none =>
         match findDimIndex? reducedLabels d with
         | some cIdx => toContr := toContr.set! p cIdx
-        | none => panic! "einsumN: internal label mapping error"
+        | none => panic! "einsumN: dim not found in output or contraction labels"
   return { isOut := isOut, toOut := toOut, toContr := toContr }
 
 private def Tensor.einsumNCore {outDims : DimList} {α : Type}
     [Inhabited α] [Zero α] [Add α] [Mul α]
     (ops : Array (EinsumOperand α))
     : Tensor outDims α := Id.run do
-  if ops.size == 0 then
-    panic! "einsumN: expected at least one operand"
   let outShape := shapeOf outDims
+  if ops.size == 0 then
+    return { data := Array.mkArray (totalSize outShape) 0
+             shape := outShape
+             strides := computeStrides outShape
+             offset := 0 }
   let outLabels := outDims.toArray
   let allLabels := unionDimLists (ops.map (·.dims))
   let mut reducedLabels : Array Dim := #[]
@@ -724,23 +727,27 @@ def Tensor.einsumBy {A B : DimList} {Out : Type} {α : Type}
   Tensor.einsum2Core (outDims := h.outDims) x y
 
 class EinsumArgs (Ops : Type) (outDims : DimList) (α : Type) where
+  validDims : Bool
   run : Ops → Tensor outDims α
 
 instance {A B outDims : DimList} {α : Type}
     [Inhabited α] [Zero α] [Add α] [Mul α] :
     EinsumArgs (Tensor A α × Tensor B α) outDims α where
+  validDims := validEinsum2 A B outDims
   run := fun (x, y) => Tensor.einsum2Core (outDims := outDims) x y
 
 instance {A B C outDims : DimList} {α : Type}
     [Inhabited α] [Zero α] [Add α] [Mul α] :
     EinsumArgs (Tensor A α × Tensor B α × Tensor C α) outDims α where
+  validDims := validEinsum3 A B C outDims
   run := fun (x, y, z) =>
     Tensor.einsumNCore (outDims := outDims)
       #[{ dims := A, t := x }, { dims := B, t := y }, { dims := C, t := z }]
 
 def Tensor.einsum {Ops : Type} {outDims : DimList} {α : Type}
     [h : EinsumArgs Ops outDims α]
-    (ops : Ops) : Tensor outDims α :=
+    (ops : Ops)
+    (_valid : h.validDims = true := by decide) : Tensor outDims α :=
   h.run ops
 
 -- ============================================
@@ -869,6 +876,10 @@ def cmat : Tensor [i, j] :=
   Tensor.einsumBy a bmat (fun (i, _) (_, j) => (i, j))
 
 def cmat2 : Tensor [i, j] := Tensor.einsum (a, bmat)
+
+-- Compile-time validation test: uncomment to see error
+-- def bogus := dim! 99
+-- def badEinsum : Tensor [bogus] Nat := Tensor.einsum (a, bmat)
 
 -- Unary counterparts via rearrange/reduce
 def smallTU : Tensor [dj, di] := small.rearrange
