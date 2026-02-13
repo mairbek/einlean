@@ -148,25 +148,38 @@ def Tensor.reshape {inDims outDims : DimList} (t : Tensor inDims α)
 
 ## Einsum (Current)
 
+Einlean now exposes two complementary einsum APIs:
+
+### 1) Typed tuple API (`einsum`)
+
 ```lean
-def Tensor.einsum {A B : DimList} {Out : Type}
+def Tensor.einsum {Ops : Type} {outDims : DimList}
+    [h : EinsumArgs Ops outDims α]
+    (ops : Ops)
+    (_valid : h.validDims = true := by decide)
+    : Tensor outDims α
+```
+
+- Supports 2 or 3 operands via tuples:
+  - `(x, y)`
+  - `(x, y, z)`
+- Output dims are usually inferred from the expected type.
+- Dimension compatibility is checked at compile time via `validEinsum2` / `validEinsum3`.
+
+### 2) Lambda-based API (`einsumBy`)
+
+```lean
+def Tensor.einsumBy {A B : DimList} {Out : Type}
     [h : EinsumOut Out A B]
     (x : Tensor A α) (y : Tensor B α)
     (_f : SlotTuple A → SlotTuple B → Out)
     : Tensor h.outDims α
 ```
 
-`EinsumOut` infers output dims from slot positions chosen in the lambda result.
+- Binary-only, slot-based output specification.
+- Useful when you want explicit output-axis selection in code.
 
-Runtime algorithm:
-
-1. Build output shape from selected A/B axes.
-2. Mark which A/B axes are output axes.
-3. Remaining axes become contraction axes (paired positionally).
-4. Iterate over output indices and contraction indices.
-5. Accumulate `x[aIdx] * y[bIdx]`.
-
-This supports matrix multiply and batch-style contractions with compile-time output typing.
+Runtime execution uses a generic contraction kernel that maps output labels vs reduced labels, then accumulates products across contraction coordinates.
 
 ## Visualization
 
@@ -199,8 +212,18 @@ def j := dim! 4
 def k := dim! 3
 def a : Tensor [i, k] := arange 1
 def bmat : Tensor [k, j] := arange 10
-def cmat : Tensor [i, j] :=
-  Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
+def cmat : Tensor [i, j] := Tensor.einsum (a, bmat)
+
+-- 3-input einsum (bilinear-style contraction)
+def l := dim! 2
+def x : Tensor [i, k] := arange 1
+def w : Tensor [j, k, l] := arange 1
+def y : Tensor [i, l] := arange 1
+def bilinear : Tensor [i, j] := Tensor.einsum (x, w, y)
+
+-- Complementary lambda-style API
+def cmatBy : Tensor [i, j] :=
+  Tensor.einsumBy a bmat (fun (i, _) (_, j) => (i, j))
 ```
 
 ## Current Guarantees and Limits
@@ -213,8 +236,9 @@ Guarantees:
 
 Current limits:
 
-- Einsum axis matching is positional and currently less general than full symbolic einsum.
-- Rearrange/einsum rely on specific slot encodings and typeclass-driven shape extraction.
+- `einsum` currently supports 2 or 3 operands (not arbitrary N in the public API).
+- No explicit diagonal/repeated-index semantics yet (relative to full symbolic einsum strings).
+- Slot-based APIs (`rearrangeBy` / `einsumBy`) still rely on `SlotTuple` encodings.
 
 ## Near-Term Direction
 
