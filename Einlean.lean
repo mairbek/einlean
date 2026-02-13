@@ -930,6 +930,19 @@ def bw := b * w
 def transposed2 : Tensor [b, c, h, w] := image.rearrange
 def merged2 : Tensor [h, bw, c] := image.rearrange
 
+-- Einops-style flatten: "b c h w -> b (c h w)"
+def chw := c * h * w
+def flattenedCHW : Tensor [b, chw] := image.rearrange
+
+-- Small flatten demo to keep #eval fast
+def sb := dim! 2
+def sc := dim! 3
+def sh := dim! 2
+def sw := dim! 2
+def small4d : Tensor [sb, sc, sh, sw] := arange 1
+def schws := sc * sh * sw
+def flattenedSmallCHW : Tensor [sb, schws] := small4d.rearrange
+
 -- Small merge test: 2×3 -> 6 (flatten)
 #eval small      -- [[1, 2, 3], [4, 5, 6]]
 #eval smallT     -- [[1, 4], [2, 5], [3, 6]]
@@ -944,6 +957,9 @@ def merged2 : Tensor [h, bw, c] := image.rearrange
 #eval hadamard   -- [[10, 22, 36], [52, 70, 90]]
 #eval bmm
 #eval bilinear
+#eval flattenedSmallCHW.shape -- #[2, 12]
+#eval flattenedSmallCHW
+-- #eval flattenedCHW.shape
 
 def db := dim! 2
 def dw := dim! 3
