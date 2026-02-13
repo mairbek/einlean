@@ -400,6 +400,35 @@ def validReduce (inDims outDims : DimList) : Bool :=
   outIds.all (fun id => inIds.any (· == id)) &&
   outIds.all (fun id => productForId outA id == productForId inA id)
 
+private def uniqueDims (dims : DimList) : DimList :=
+  dims.foldl (fun acc d => if acc.any (· == d) then acc else acc ++ [d]) []
+
+private def findDimIndex? (dims : Array Dim) (d : Dim) : Option Nat := Id.run do
+  for i in [:dims.size] do
+    if dims[i]! == d then
+      return some i
+  return none
+
+private def unionDimLists (dss : Array DimList) : Array Dim := Id.run do
+  let mut out : Array Dim := #[]
+  for ds in dss do
+    for d in ds do
+      if !(out.any (· == d)) then
+        out := out.push d
+  return out
+
+def validEinsum2 (aDims bDims outDims : DimList) : Bool :=
+  let outU := uniqueDims outDims
+  let inU := uniqueDims (aDims ++ bDims)
+  outU.length == outDims.length &&
+  outU.all (fun d => inU.any (· == d))
+
+def validEinsum3 (aDims bDims cDims outDims : DimList) : Bool :=
+  let outU := uniqueDims outDims
+  let inU := uniqueDims (aDims ++ bDims ++ cDims)
+  outU.length == outDims.length &&
+  outU.all (fun d => inU.any (· == d))
+
 /-- For each output dim, find which input axis indices contribute to it by matching atom IDs. -/
 def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run do
   -- Build flat list of (inputAxisIndex, atom) pairs
@@ -580,6 +609,10 @@ class EinsumOut (Out : Type) (A B : DimList) where
       fromB=false → from A at srcIdx, fromB=true → from B at srcIdx. -/
   outSrc : List (Bool × Nat)
 
+instance (A B : DimList) : EinsumOut PUnit A B where
+  outDims := []
+  outSrc := []
+
 instance (A B : DimList) (i : Fin A.length) : EinsumOut (Slot A i) A B where
   outDims := [A.get i]
   outSrc := [(false, i.val)]
@@ -594,82 +627,121 @@ instance (A B : DimList) {α β : Type} [EinsumOut α A B] [EinsumOut β A B] : 
   outSrc := (EinsumOut.outSrc (Out := α) (A := A) (B := B)) ++
     (EinsumOut.outSrc (Out := β) (A := A) (B := B))
 
-def Tensor.einsum {A B : DimList} {Out : Type} {α : Type}
-    [h : EinsumOut Out A B]
+private structure EinsumOperand (α : Type) where
+  dims : DimList
+  t : Tensor dims α
+
+private instance {α : Type} [Inhabited α] : Inhabited (EinsumOperand α) where
+  default := { dims := [], t := (default : Tensor [] α) }
+
+private structure AxisPlan where
+  isOut : Array Bool
+  toOut : Array Nat
+  toContr : Array Nat
+
+instance : Inhabited AxisPlan where
+  default := { isOut := #[], toOut := #[], toContr := #[] }
+
+private def buildAxisPlan (dims : DimList) (outLabels reducedLabels : Array Dim) : AxisPlan := Id.run do
+  let mut isOut := Array.mkArray dims.length false
+  let mut toOut := Array.mkArray dims.length 0
+  let mut toContr := Array.mkArray dims.length 0
+  for p in [:dims.length] do
+    let d := dims[p]!
+    match findDimIndex? outLabels d with
+    | some idx =>
+        isOut := isOut.set! p true
+        toOut := toOut.set! p idx
+    | none =>
+        match findDimIndex? reducedLabels d with
+        | some cIdx => toContr := toContr.set! p cIdx
+        | none => panic! "einsumN: internal label mapping error"
+  return { isOut := isOut, toOut := toOut, toContr := toContr }
+
+private def Tensor.einsumNCore {outDims : DimList} {α : Type}
     [Inhabited α] [Zero α] [Add α] [Mul α]
-    (x : Tensor A α) (y : Tensor B α)
-    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims α := Id.run do
-  let outSrc := h.outSrc.toArray
+    (ops : Array (EinsumOperand α))
+    : Tensor outDims α := Id.run do
+  if ops.size == 0 then
+    panic! "einsumN: expected at least one operand"
+  let outShape := shapeOf outDims
+  let outLabels := outDims.toArray
+  let allLabels := unionDimLists (ops.map (·.dims))
+  let mut reducedLabels : Array Dim := #[]
+  for d in allLabels do
+    if !(outLabels.any (· == d)) then
+      reducedLabels := reducedLabels.push d
+  let contrShape := reducedLabels.map (·.size)
 
-  -- Build output shape
-  let outLen := outSrc.size
-  let mut outShape := Array.mkArray outLen 0
-  for oIdx in [:outLen] do
-    let (fromB, srcIdx) := outSrc[oIdx]!
-    outShape := outShape.set! oIdx (if fromB then y.shape[srcIdx]! else x.shape[srcIdx]!)
-
-  -- Which positions of A / B appear in the output?
-  let mut aIsOut := Array.mkArray A.length false
-  let mut bIsOut := Array.mkArray B.length false
-  let mut aToOut := Array.mkArray A.length 0
-  let mut bToOut := Array.mkArray B.length 0
-  for oIdx in [:outLen] do
-    let (fromB, srcIdx) := outSrc[oIdx]!
-    if fromB then
-      bIsOut := bIsOut.set! srcIdx true
-      bToOut := bToOut.set! srcIdx oIdx
-    else
-      aIsOut := aIsOut.set! srcIdx true
-      aToOut := aToOut.set! srcIdx oIdx
-
-  -- Contracted positions (those NOT in output), paired positionally
-  let mut aContr : Array Nat := #[]
-  for p in [:A.length] do
-    if !(aIsOut[p]!) then aContr := aContr.push p
-  let mut bContr : Array Nat := #[]
-  for p in [:B.length] do
-    if !(bIsOut[p]!) then bContr := bContr.push p
-
-  -- Contracted shape (from A side)
-  let contrShape := aContr.map (fun p => x.shape[p]!)
-
-  -- Map: contracted A/B position → contracted loop index
-  let mut aToContr := Array.mkArray A.length 0
-  for cIdx in [:aContr.size] do
-    aToContr := aToContr.set! (aContr[cIdx]!) cIdx
-  let mut bToContr := Array.mkArray B.length 0
-  for cIdx in [:bContr.size] do
-    bToContr := bToContr.set! (bContr[cIdx]!) cIdx
+  let plans := ops.map (fun op => buildAxisPlan op.dims outLabels reducedLabels)
 
   let outTotal := totalSize outShape
   let contrTotal := totalSize contrShape
-
   let mut resultData : Array α := Array.mkEmpty outTotal
   for outFlat in [:outTotal] do
     let outIdx := toMultiIndex outFlat outShape
-    let mut acc : α := Zero.zero
+    let mut acc : α := 0
     for contrFlat in [:contrTotal] do
       let contrIdx := toMultiIndex contrFlat contrShape
-      -- Build A multi-index
-      let mut aIdx := Array.mkArray A.length 0
-      for p in [:A.length] do
-        if aIsOut[p]! then
-          aIdx := aIdx.set! p (outIdx[aToOut[p]!]!)
+      let firstOp := ops[0]!
+      let firstPlan := plans[0]!
+      let mut firstIdx := Array.mkArray firstOp.dims.length 0
+      for p in [:firstOp.dims.length] do
+        if firstPlan.isOut[p]! then
+          firstIdx := firstIdx.set! p (outIdx[firstPlan.toOut[p]!]!)
         else
-          aIdx := aIdx.set! p (contrIdx[aToContr[p]!]!)
-      -- Build B multi-index
-      let mut bIdx := Array.mkArray B.length 0
-      for p in [:B.length] do
-        if bIsOut[p]! then
-          bIdx := bIdx.set! p (outIdx[bToOut[p]!]!)
-        else
-          bIdx := bIdx.set! p (contrIdx[bToContr[p]!]!)
-      acc := acc + x.get! aIdx * y.get! bIdx
+          firstIdx := firstIdx.set! p (contrIdx[firstPlan.toContr[p]!]!)
+      let mut term := firstOp.t.get! firstIdx
+      for opIdx in [1:ops.size] do
+        let op := ops[opIdx]!
+        let plan := plans[opIdx]!
+        let mut idx := Array.mkArray op.dims.length 0
+        for p in [:op.dims.length] do
+          if plan.isOut[p]! then
+            idx := idx.set! p (outIdx[plan.toOut[p]!]!)
+          else
+            idx := idx.set! p (contrIdx[plan.toContr[p]!]!)
+        term := term * op.t.get! idx
+      acc := acc + term
     resultData := resultData.push acc
   return { data := resultData
            shape := outShape
            strides := computeStrides outShape
            offset := 0 }
+
+private def Tensor.einsum2Core {A B outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [Mul α]
+    (x : Tensor A α) (y : Tensor B α)
+    : Tensor outDims α :=
+  Tensor.einsumNCore (outDims := outDims)
+    #[{ dims := A, t := x }, { dims := B, t := y }]
+
+def Tensor.einsumBy {A B : DimList} {Out : Type} {α : Type}
+    [h : EinsumOut Out A B]
+    [Inhabited α] [Zero α] [Add α] [Mul α]
+    (x : Tensor A α) (y : Tensor B α)
+    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims α :=
+  Tensor.einsum2Core (outDims := h.outDims) x y
+
+class EinsumArgs (Ops : Type) (outDims : DimList) (α : Type) where
+  run : Ops → Tensor outDims α
+
+instance {A B outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [Mul α] :
+    EinsumArgs (Tensor A α × Tensor B α) outDims α where
+  run := fun (x, y) => Tensor.einsum2Core (outDims := outDims) x y
+
+instance {A B C outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [Mul α] :
+    EinsumArgs (Tensor A α × Tensor B α × Tensor C α) outDims α where
+  run := fun (x, y, z) =>
+    Tensor.einsumNCore (outDims := outDims)
+      #[{ dims := A, t := x }, { dims := B, t := y }, { dims := C, t := z }]
+
+def Tensor.einsum {Ops : Type} {outDims : DimList} {α : Type}
+    [h : EinsumArgs Ops outDims α]
+    (ops : Ops) : Tensor outDims α :=
+  h.run ops
 
 -- ============================================
 -- REDUCE
@@ -794,7 +866,41 @@ def bmat : Tensor [k, j] := arange 10
 
 set_option linter.unusedVariables false in
 def cmat : Tensor [i, j] :=
-  Tensor.einsum a bmat (fun (i, _) (_, j) => (i, j))
+  Tensor.einsumBy a bmat (fun (i, _) (_, j) => (i, j))
+
+def cmat2 : Tensor [i, j] := Tensor.einsum (a, bmat)
+
+-- Unary counterparts via rearrange/reduce
+def smallTU : Tensor [dj, di] := small.rearrange
+set_option linter.unusedVariables false in
+def rowSumsU : Tensor [di] := small.reduceBy .sum fun (i, j) => i
+set_option linter.unusedVariables false in
+def colSumsU : Tensor [dj] := small.reduceBy .sum fun (i, j) => j
+set_option linter.unusedVariables false in
+def totalSumU : Tensor [] := small.reduceBy .sum fun (i, j) => ()
+
+-- Scalar-output dot products and Hadamard product
+def dotV1 : Tensor [dj] := arange 1
+def dotV2 : Tensor [dj] := arange 3
+def vecDot : Tensor [] := Tensor.einsum (dotV1, dotV2)
+
+def dotM1 : Tensor [di, dj] := arange 1
+def dotM2 : Tensor [di, dj] := arange 10
+def matDot : Tensor [] := Tensor.einsum (dotM1, dotM2)
+def hadamard : Tensor [di, dj] := Tensor.einsum (dotM1, dotM2)
+
+-- Batch matrix multiplication: bik,bkj->bij
+def eb := dim! 2
+def ba : Tensor [eb, i, k] := arange 1
+def bbatch : Tensor [eb, k, j] := arange 1
+def bmm : Tensor [eb, i, j] := Tensor.einsum (ba, bbatch)
+
+-- 3-input bilinear: ik,jkl,il->ij
+def el := dim! 2
+def bilX : Tensor [i, k] := arange 1
+def bilW : Tensor [j, k, el] := arange 1
+def bilY : Tensor [i, el] := arange 1
+def bilinear : Tensor [i, j] := Tensor.einsum (bilX, bilW, bilY)
 
 -- Image — sizes live in the dims
 def b := dim! 32
@@ -821,6 +927,16 @@ def merged2 : Tensor [h, bw, c] := image.rearrange
 #eval small      -- [[1, 2, 3], [4, 5, 6]]
 #eval smallT     -- [[1, 4], [2, 5], [3, 6]]
 #eval cmat       -- [[92, 98, 104, 110], [218, 233, 248, 263]]
+#eval cmat2      -- [[92, 98, 104, 110], [218, 233, 248, 263]]
+#eval smallTU    -- [[1, 4], [2, 5], [3, 6]]
+#eval rowSumsU   -- [6, 15]
+#eval colSumsU   -- [5, 7, 9]
+#eval totalSumU  -- 21
+#eval vecDot     -- 26
+#eval matDot     -- 280
+#eval hadamard   -- [[10, 22, 36], [52, 70, 90]]
+#eval bmm
+#eval bilinear
 
 def db := dim! 2
 def dw := dim! 3
