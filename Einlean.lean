@@ -582,7 +582,15 @@ private def Tensor.rearrangeByRoots {inDims outDims : DimList} {α : Type} [Inha
 
 def Tensor.rearrange {inDims outDims : DimList} {α : Type} [Inhabited α] (t : Tensor inDims α)
     (_valid : validRearrange inDims outDims = true := by decide) : Tensor outDims α :=
-  Tensor.rearrangeByRoots t
+  if hReshape : validReshape inDims outDims = true then
+    let _ := hReshape
+    let outShape := shapeOf outDims
+    { data := t.data
+      shape := outShape
+      strides := computeStrides outShape
+      offset := t.offset }
+  else
+    Tensor.rearrangeByRoots t
 
 def Tensor.reshape {inDims outDims : DimList} {α : Type} (t : Tensor inDims α)
     (_valid : validReshape inDims outDims = true := by decide) : Tensor outDims α :=
