@@ -61,6 +61,26 @@ def Dim.factor! (d : Dim) (k : Nat)
     (_div : d.size % k = 0 := by decide) : Dim :=
   Dim.factorAt d k k _single _pos _div
 
+def Dim.factorPair! (d : Dim) (k : Nat)
+    (_single : d.atoms.length = 1 := by decide)
+    (_pos : k > 0 := by decide)
+    (_div : d.size % k = 0 := by decide) : Dim × Dim :=
+  let a := d.atoms.get! 0
+  -- Keep outer rank > inner rank so atom-order reconstruction matches
+  -- the common split pattern (outer, inner).
+  let outer : Dim := ⟨[{ id := a.id, size := d.size / k, rank := 2 }]⟩
+  let inner : Dim := ⟨[{ id := a.id, size := k, rank := 1 }]⟩
+  (outer, inner)
+
+open Lean in
+syntax "factor! " ident "," ident " := " term "," term : command
+
+open Lean in
+macro_rules
+  | `(factor! $outer:ident, $inner:ident := $d:term, $k:term) =>
+      `(def $outer : Dim := (Dim.factorPair! $d $k).1
+        def $inner : Dim := (Dim.factorPair! $d $k).2)
+
 abbrev DimList := List Dim
 
 -- ============================================
@@ -1121,8 +1141,7 @@ def b := dim! 6
 def h := dim! 2
 def w := dim! 2
 
-def b1 := b.factor! 3
-def b2 := b.factor! 2
+factor! b1, b2 := b, 2
 
 def example2d : Tensor [b, h, w] := arange 1
 def rep : Tensor [b1 * h, b2 * w] := example2d.rearrange

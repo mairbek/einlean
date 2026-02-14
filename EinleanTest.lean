@@ -235,10 +235,8 @@ def ph := dim! 4
 def pw := dim! 4
 def pc := dim! 1
 
-def phOut := ph.factorAt 2 10
-def ph2 := ph.factorAt 2 1
-def pwOut := pw.factorAt 2 10
-def pw2 := pw.factorAt 2 1
+factor! phOut, ph2 := ph, 2
+factor! pwOut, pw2 := pw, 2
 
 -- Input [b, h, w, c]
 def ims : Tensor [pb, ph, pw, pc] := arange 1

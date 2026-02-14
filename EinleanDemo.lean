@@ -31,8 +31,7 @@ private def channel (rgb : Rgb) (ch : Nat) : Int :=
 
 def demoSize : Nat := 8
 def b : Dim := dim! 6
-def b1 : Dim := b.factor! 3
-def b2 : Dim := b.factor! 2
+factor! b1, b2 := b, 2
 def w : Dim := digitW demoSize
 def h : Dim := digitH demoSize
 
