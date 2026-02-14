@@ -409,13 +409,6 @@ private def findDimIndex? (dims : Array Dim) (d : Dim) : Option Nat := Id.run do
       return some i
   return none
 
-private def unionDimLists (dss : Array DimList) : Array Dim := Id.run do
-  let mut out : Array Dim := #[]
-  for ds in dss do
-    for d in ds do
-      if !(out.any (· == d)) then
-        out := out.push d
-  return out
 
 def validEinsum2 (aDims bDims outDims : DimList) : Bool :=
   let outU := uniqueDims outDims
@@ -642,22 +635,6 @@ private structure AxisPlan where
 instance : Inhabited AxisPlan where
   default := { isOut := #[], toOut := #[], toContr := #[] }
 
-private def buildAxisPlan (dims : DimList) (outLabels reducedLabels : Array Dim) : AxisPlan := Id.run do
-  let mut isOut := Array.mkArray dims.length false
-  let mut toOut := Array.mkArray dims.length 0
-  let mut toContr := Array.mkArray dims.length 0
-  for p in [:dims.length] do
-    let d := dims[p]!
-    match findDimIndex? outLabels d with
-    | some idx =>
-        isOut := isOut.set! p true
-        toOut := toOut.set! p idx
-    | none =>
-        match findDimIndex? reducedLabels d with
-        | some cIdx => toContr := toContr.set! p cIdx
-        | none => panic! "einsumN: dim not found in output or contraction labels"
-  return { isOut := isOut, toOut := toOut, toContr := toContr }
-
 private def Tensor.einsumNCore {outDims : DimList} {α : Type}
     [Inhabited α] [Zero α] [Add α] [Mul α]
     (ops : Array (EinsumOperand α))
@@ -669,14 +646,37 @@ private def Tensor.einsumNCore {outDims : DimList} {α : Type}
              strides := computeStrides outShape
              offset := 0 }
   let outLabels := outDims.toArray
-  let allLabels := unionDimLists (ops.map (·.dims))
+
+  -- Dims are labels: same dim = same index (trace/diagonal semantics for repeated dims).
+  -- Collect unique dims across all operands, separate into output vs contraction.
+  let allLabels := Id.run do
+    let mut out : Array Dim := #[]
+    for op in ops do
+      for d in op.dims do
+        if !(out.any (· == d)) then
+          out := out.push d
+    return out
   let mut reducedLabels : Array Dim := #[]
   for d in allLabels do
     if !(outLabels.any (· == d)) then
       reducedLabels := reducedLabels.push d
   let contrShape := reducedLabels.map (·.size)
 
-  let plans := ops.map (fun op => buildAxisPlan op.dims outLabels reducedLabels)
+  let plans := ops.map fun op => Id.run do
+    let mut isOut := Array.mkArray op.dims.length false
+    let mut toOut := Array.mkArray op.dims.length 0
+    let mut toContr := Array.mkArray op.dims.length 0
+    for p in [:op.dims.length] do
+      let d := op.dims[p]!
+      match findDimIndex? outLabels d with
+      | some idx =>
+          isOut := isOut.set! p true
+          toOut := toOut.set! p idx
+      | none =>
+          match findDimIndex? reducedLabels d with
+          | some cIdx => toContr := toContr.set! p cIdx
+          | none => panic! "einsumN: dim not found in output or contraction labels"
+    return { isOut, toOut, toContr : AxisPlan }
 
   let outTotal := totalSize outShape
   let contrTotal := totalSize contrShape

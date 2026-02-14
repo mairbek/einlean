@@ -105,10 +105,25 @@ set_option linter.unusedVariables false in
 def rectTTimesSq : Tensor [rj, ri] :=
   Tensor.einsumBy rectT sqMat (fun (_j, _k) (_k2, _i) => (_j, _i))
 
+-- Tuple API with repeated dims: same dim = same index (diagonal semantics).
+-- sqMat = [[1,2],[3,4]], rect = [[1,2,3],[4,5,6]]
+-- ii,ij->ij: out[i,j] = diag(sqMat)[i] * rect[i,j]
+-- = [[1*1, 1*2, 1*3], [4*4, 4*5, 4*6]] = [[1,2,3],[16,20,24]]
+def sqTimesRectTuple : Tensor [ri, rj] := Tensor.einsum (sqMat, rect)
+
+-- ji,ii->ji: out[j,i] = rectT[j,i] * diag(sqMat)[i]
+-- rectT = [[1,4],[2,5],[3,6]], diag = [1,4]
+-- = [[1*1, 4*4], [2*1, 5*4], [3*1, 6*4]] = [[1,16],[2,20],[3,24]]
+def rectTimesSqTuple : Tensor [rj, ri] := Tensor.einsum (rectT, sqMat)
+
 #eval do
   IO.println "=== Repeated Dim: Einsum ==="
-  check "sqMat × rect" sqTimesRect.toList [9, 12, 15, 19, 26, 33]
-  check "rectT × sqMat" rectTTimesSq.toList [13, 18, 17, 24, 21, 30]
+  -- einsumBy: user explicitly selects which axes are contracted (matmul)
+  check "sqMat × rect (einsumBy)" sqTimesRect.toList [9, 12, 15, 19, 26, 33]
+  check "rectT × sqMat (einsumBy)" rectTTimesSq.toList [13, 18, 17, 24, 21, 30]
+  -- tuple API: same dim = same index, so repeated dims give diagonal behavior
+  check "sqMat diag × rect (tuple)" sqTimesRectTuple.toList [1, 2, 3, 16, 20, 24]
+  check "rectT × sqMat diag (tuple)" rectTimesSqTuple.toList [1, 16, 2, 20, 3, 24]
 
 -- ============================================
 -- REGRESSION: DISTINCT DIMS
