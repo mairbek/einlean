@@ -431,7 +431,7 @@ def validReduce (inDims outDims : DimList) : Bool :=
   let outIds := uniqueIds outA
   let inIds := uniqueIds inA
   outIds.all (fun id => inIds.any (· == id)) &&
-  outIds.all (fun id => productForId outA id == productForId inA id)
+  outIds.all (fun id => productForId outA id <= productForId inA id)
 
 private def uniqueDims (dims : DimList) : DimList :=
   dims.foldl (fun acc d => if acc.any (· == d) then acc else acc ++ [d]) []
@@ -493,6 +493,14 @@ def computeReduceInfo (inDims outDims : DimList) : Array (Array Nat) × Array Na
       reduced := reduced.push p
   return (mapping, reduced)
 
+private def computeAtomStarts (dims : DimList) : Array Nat := Id.run do
+  let mut starts : Array Nat := Array.mkArray dims.length 0
+  let mut cur := 0
+  for i in [:dims.length] do
+    starts := starts.set! i cur
+    cur := cur + dims[i]!.atoms.length
+  return starts
+
 private def atomDigitsFromAxisIndex (idx : Nat) (atomSizes : Array Nat) : Array Nat := Id.run do
   let n := atomSizes.size
   let mut out := Array.mkArray n 0
@@ -537,6 +545,9 @@ private structure RootSpec where
   outPos : Array Nat
   inSizes : Array Nat
   outSizes : Array Nat
+
+private instance : Inhabited RootSpec where
+  default := { id := 0, inPos := #[], outPos := #[], inSizes := #[], outSizes := #[] }
 
 private def buildRootSpecs (inAtoms outAtoms : Array Atom) : Array RootSpec := Id.run do
   let mut ids : Array Nat := #[]
@@ -943,6 +954,87 @@ private def Tensor.reduceGeneric {inDims outDims : DimList} {α : Type} [Inhabit
   return { data := resultData, shape := outShape,
            strides := computeStrides outShape, offset := 0 }
 
+private def Tensor.reduceGenericByAtoms {inDims outDims : DimList} {α : Type} [Inhabited α]
+    (t : Tensor inDims α)
+    (init : α) (combine : α → α → α) (finalize : α → Nat → α)
+    : Tensor outDims α := Id.run do
+  let outShape := shapeOf outDims
+  let outTotal := totalSize outShape
+  let inAtoms := (allAtoms inDims).toArray
+  let outAtoms := (allAtoms outDims).toArray
+  let rootSpecs := buildRootSpecs inAtoms outAtoms
+  let mut reducedRootShape : Array Nat := #[]
+  for spec in rootSpecs do
+    let inTotal := totalSize spec.inSizes
+    let outTotalRoot := totalSize spec.outSizes
+    let red := if outTotalRoot > 0 then inTotal / outTotalRoot else inTotal
+    reducedRootShape := reducedRootShape.push red
+  let reducedTotal := totalSize reducedRootShape
+
+  let inAtomStarts := computeAtomStarts inDims
+  let mut outAtomStarts : Array Nat := Array.mkArray outDims.length 0
+  let mut outCur := 0
+  for i in [:outDims.length] do
+    outAtomStarts := outAtomStarts.set! i outCur
+    outCur := outCur + outDims[i]!.atoms.length
+
+  let mut resultData : Array α := Array.mkEmpty outTotal
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+    let mut outAtomDigits : Array Nat := Array.mkArray outAtoms.size 0
+    for ax in [:outDims.length] do
+      let d := outDims[ax]!
+      let sizes := d.atoms.map (·.size) |>.toArray
+      let digs := atomDigitsFromAxisIndex outIdx[ax]! sizes
+      let start := outAtomStarts[ax]!
+      for j in [:digs.size] do
+        outAtomDigits := outAtomDigits.set! (start + j) digs[j]!
+
+    let mut acc : α := init
+    for redFlat in [:reducedTotal] do
+      let redRootIdx := toMultiIndex redFlat reducedRootShape
+      let mut inAtomDigits : Array Nat := Array.mkArray inAtoms.size 0
+      for s in [:rootSpecs.size] do
+        let spec := rootSpecs[s]!
+        let mut outCoord := 0
+        for j in [:spec.outPos.size] do
+          outCoord := outCoord * spec.outSizes[j]! + outAtomDigits[spec.outPos[j]!]!
+        let redCoord := redRootIdx[s]!
+        let inTotal := totalSize spec.inSizes
+        let outTotalRoot := totalSize spec.outSizes
+        let redSize := if outTotalRoot > 0 then inTotal / outTotalRoot else inTotal
+        let mut inCoord := outCoord * redSize + redCoord
+        for rev in [:spec.inPos.size] do
+          let j := spec.inPos.size - 1 - rev
+          let sz := spec.inSizes[j]!
+          if sz > 0 then
+            inAtomDigits := inAtomDigits.set! (spec.inPos[j]!) (inCoord % sz)
+            inCoord := inCoord / sz
+          else
+            inAtomDigits := inAtomDigits.set! (spec.inPos[j]!) 0
+
+      let mut inIdx := Array.mkArray inDims.length 0
+      for ax in [:inDims.length] do
+        let d := inDims[ax]!
+        let start := inAtomStarts[ax]!
+        let atomCount := d.atoms.length
+        let mut digs : Array Nat := Array.mkEmpty atomCount
+        for j in [:atomCount] do
+          digs := digs.push (inAtomDigits[start + j]!)
+        let sizes := d.atoms.map (·.size) |>.toArray
+        inIdx := inIdx.set! ax (axisIndexFromAtomDigits digs sizes)
+
+      let flat := flatIndex inIdx t.strides t.offset
+      let val := t.data.get! flat
+      acc := combine acc val
+    acc := finalize acc reducedTotal
+    resultData := resultData.push acc
+
+  return { data := resultData
+           shape := outShape
+           strides := computeStrides outShape
+           offset := 0 }
+
 private def natToAlpha {α : Type} [Zero α] [Add α] [OfNat α 1] (n : Nat) : α := Id.run do
   let mut acc : α := 0
   for _ in [:n] do
@@ -962,6 +1054,20 @@ private def dispatchReduce {inDims outDims : DimList} {α : Type}
   | .max => Tensor.reduceGeneric t mapping reducedAxes 0
       (fun a b => if compare a b == .lt then b else a) (fun a _ => a)
   | .min => Tensor.reduceGeneric t mapping reducedAxes 0
+      (fun a b => if compare a b == .gt then b else a) (fun a _ => a)
+
+private def dispatchReduceByAtoms {inDims outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [HDiv α α α] [Ord α] [OfNat α 1]
+    (t : Tensor inDims α) (op : ReduceOp)
+    : Tensor outDims α :=
+  match op with
+  | .sum => Tensor.reduceGenericByAtoms t 0
+      (· + ·) (fun a _ => a)
+  | .mean => Tensor.reduceGenericByAtoms t 0
+      (· + ·) (fun a n => a / natToAlpha n)
+  | .max => Tensor.reduceGenericByAtoms t 0
+      (fun a b => if compare a b == .lt then b else a) (fun a _ => a)
+  | .min => Tensor.reduceGenericByAtoms t 0
       (fun a b => if compare a b == .gt then b else a) (fun a _ => a)
 
 def Tensor.reduceBy {dims : DimList} {Out : Type}
@@ -986,8 +1092,7 @@ def Tensor.reduce {inDims outDims : DimList} {α : Type}
     (t : Tensor inDims α) (op : ReduceOp)
     (_valid : validReduce inDims outDims = true := by decide)
     : Tensor outDims α :=
-  let (mapping, reducedAxes) := computeReduceInfo inDims outDims
-  dispatchReduce t op mapping reducedAxes
+  dispatchReduceByAtoms t op
 
 -- ============================================
 -- EXAMPLES

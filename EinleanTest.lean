@@ -242,7 +242,36 @@ factor! pwOut, pw2 := pw, 2
 -- reduce(ims, "b (h h2) (w w2) c -> h (b w) c", "mean", h2=2, w2=2)
 def pooled : Tensor [phOut, pb * pwOut, pc] := Id.run do
   let ims : Tensor [pb, ph, pw, pc] := arange 1
-  let patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc] := ims.rearrange
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc] := ims.rearrange
+  return grouped.reduce .mean
+
+def pooledBy : Tensor [phOut, pb * pwOut, pc] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc] := arange 1
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc] := ims.rearrange
+  let patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc] := grouped.rearrange
+  return patches.reduceBy .mean fun (b, h, _h2, w, _w2, c) => (h, b * w, c)
+
+def pooledSum : Tensor [phOut, pb * pwOut, pc] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc] := arange 1
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc] := ims.rearrange
+  return grouped.reduce .sum
+
+def pooledSumBy : Tensor [phOut, pb * pwOut, pc] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc] := arange 1
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc] := ims.rearrange
+  let patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc] := grouped.rearrange
+  return patches.reduceBy .sum fun (b, h, _h2, w, _w2, c) => (h, b * w, c)
+
+def pc3 := dim! 3
+def pooledRGB : Tensor [phOut, pb * pwOut, pc3] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc3] := arange 1
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc3] := ims.rearrange
+  return grouped.reduce .mean
+
+def pooledRGBBy : Tensor [phOut, pb * pwOut, pc3] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc3] := arange 1
+  let grouped : Tensor [pb, phOut * ph2, pwOut * pw2, pc3] := ims.rearrange
+  let patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc3] := grouped.rearrange
   return patches.reduceBy .mean fun (b, h, _h2, w, _w2, c) => (h, b * w, c)
 
 #eval do
@@ -250,6 +279,10 @@ def pooled : Tensor [phOut, pb * pwOut, pc] := Id.run do
   checkShape "pooled shape" pooled.shape #[2, 4, 1]
   -- h0: [3, 5, 19, 21], h1: [11, 13, 27, 29]
   check "pooled values" pooled.toList [3, 5, 19, 21, 11, 13, 27, 29]
+  check "pooled equals reduceBy" pooled.toList pooledBy.toList
+  check "pooled sum equals reduceBy" pooledSum.toList pooledSumBy.toList
+  checkShape "pooled rgb shape" pooledRGB.shape #[2, 4, 3]
+  check "pooled rgb equals reduceBy" pooledRGB.toList pooledRGBBy.toList
 
 end MeanPool
 
