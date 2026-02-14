@@ -1123,9 +1123,8 @@ def cmat : Tensor [i, j] :=
 
 def cmat2 : Tensor [i, j] := Tensor.einsum (a, bmat)
 
--- Compile-time validation test: uncomment to see error
--- def bogus := dim! 99
--- def badEinsum : Tensor [bogus] Nat := Tensor.einsum (a, bmat)
+-- Compile-time validation test:
+-- def badEinsum : Tensor [dim! 99] Nat := Tensor.einsum (a, bmat)
 
 -- Unary counterparts via rearrange/reduce
 def smallTU : Tensor [dj, di] := small.rearrange
@@ -1225,9 +1224,7 @@ def targetDirect : Tensor [di, dj] := arange
 def targetDirectStep : Tensor [di, dj] Float := arange 10.0 0.5
 
 -- This would fail (different atom identities):
--- def badDx := dim! 6
--- def badFlat : Tensor [badDx] := arange1d badDx
--- def badTarget : Tensor [di, dj] := badFlat.reshape
+-- def badTarget : Tensor [di, dj] := (arange1d (dim! 6)).reshape
 
 #eval flatRange      -- [0, 1, 2, 3, 4, 5]
 #eval reshapedRange  -- [[0, 1, 2], [3, 4, 5]]

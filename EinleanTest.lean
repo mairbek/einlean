@@ -114,10 +114,20 @@ def sqTimesRectTuple : Tensor [ri, rj] := Tensor.einsum (sqMat, rect)
 -- IMPORTANT SAFETY DEMO:
 -- einsumBy now rejects duplicate output-axis selection at compile time.
 -- Previously, duplicates could silently overwrite mapping and produce surprising results.
--- Uncommenting the line below should fail elaboration:
--- def badDupBy : Tensor [ri, ri] :=
---   Tensor.einsumBy sqMat rect (fun (i, _) (_, _j) => (i, i))
 -- Use tuple einsum when you want repeated-dim/diagonal semantics.
+/--
+error: could not synthesize default value for parameter '_validOut' using tactics
+---
+error: tactic 'decide' proved that the proposition
+  Einlean.validEinsumByOutSrc
+      (EinsumOut.outSrc (Slot [ri, ri] ⟨0, SlotTuple.proof_2⟩ × Slot [ri, ri] ⟨0, SlotTuple.proof_2⟩) [ri, ri] [ri, rj])
+      [ri, ri].length [ri, rj].length =
+    true
+is false
+-/
+#guard_msgs in
+def badDupBy : Tensor [ri, ri] :=
+  Tensor.einsumBy sqMat rect (fun (i, _) (_, _j) => (i, i))
 
 -- ji,ii->ji: out[j,i] = rectT[j,i] * diag(sqMat)[i]
 -- rectT = [[1,4],[2,5],[3,6]], diag = [1,4]
