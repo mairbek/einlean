@@ -238,16 +238,12 @@ def pc := dim! 1
 factor! phOut, ph2 := ph, 2
 factor! pwOut, pw2 := pw, 2
 
--- Input [b, h, w, c]
-def ims : Tensor [pb, ph, pw, pc] := arange 1
-
--- Split spatial axes: [b, h, w, c] -> [b, h, h2, w, w2, c]
-def patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc] := ims.rearrange
-
 -- Einops equivalent:
 -- reduce(ims, "b (h h2) (w w2) c -> h (b w) c", "mean", h2=2, w2=2)
-def pooled : Tensor [phOut, pb * pwOut, pc] :=
-  patches.reduceBy .mean fun (b, h, _h2, w, _w2, c) => (h, b * w, c)
+def pooled : Tensor [phOut, pb * pwOut, pc] := Id.run do
+  let ims : Tensor [pb, ph, pw, pc] := arange 1
+  let patches : Tensor [pb, phOut, ph2, pwOut, pw2, pc] := ims.rearrange
+  return patches.reduceBy .mean fun (b, h, _h2, w, _w2, c) => (h, b * w, c)
 
 #eval do
   IO.println "=== Mean Pool 2x2 ==="
