@@ -628,6 +628,26 @@ instance (A B : DimList) {α β : Type} [EinsumOut α A B] [EinsumOut β A B] : 
   outSrc := (EinsumOut.outSrc (Out := α) (A := A) (B := B)) ++
     (EinsumOut.outSrc (Out := β) (A := A) (B := B))
 
+private def validEinsumByOutSrc (outSrc : List (Bool × Nat)) (aLen bLen : Nat) : Bool := Id.run do
+  let mut aSeen : Array Bool := Array.mkArray aLen false
+  let mut bSeen : Array Bool := Array.mkArray bLen false
+  for (fromB, srcIdx) in outSrc do
+    if fromB then
+      if srcIdx < bLen then
+        if bSeen[srcIdx]! then
+          return false
+        bSeen := bSeen.set! srcIdx true
+      else
+        return false
+    else
+      if srcIdx < aLen then
+        if aSeen[srcIdx]! then
+          return false
+        aSeen := aSeen.set! srcIdx true
+      else
+        return false
+  return true
+
 private structure EinsumOperand (α : Type) where
   dims : DimList
   t : Tensor dims α
@@ -810,7 +830,9 @@ def Tensor.einsumBy {A B : DimList} {Out : Type} {α : Type}
     [h : EinsumOut Out A B]
     [Inhabited α] [Zero α] [Add α] [Mul α]
     (x : Tensor A α) (y : Tensor B α)
-    (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims α :=
+    (_f : SlotTuple A → SlotTuple B → Out)
+    (_validOut : validEinsumByOutSrc h.outSrc A.length B.length = true := by decide)
+    : Tensor h.outDims α :=
   Tensor.einsum2BySrc (outDims := h.outDims) x y h.outSrc.toArray
 
 class EinsumArgs (Ops : Type) (outDims : DimList) (α : Type) where

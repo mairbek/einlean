@@ -111,6 +111,14 @@ def rectTTimesSq : Tensor [rj, ri] :=
 -- = [[1*1, 1*2, 1*3], [4*4, 4*5, 4*6]] = [[1,2,3],[16,20,24]]
 def sqTimesRectTuple : Tensor [ri, rj] := Tensor.einsum (sqMat, rect)
 
+-- IMPORTANT SAFETY DEMO:
+-- einsumBy now rejects duplicate output-axis selection at compile time.
+-- Previously, duplicates could silently overwrite mapping and produce surprising results.
+-- Uncommenting the line below should fail elaboration:
+-- def badDupBy : Tensor [ri, ri] :=
+--   Tensor.einsumBy sqMat rect (fun (i, _) (_, _j) => (i, i))
+-- Use tuple einsum when you want repeated-dim/diagonal semantics.
+
 -- ji,ii->ji: out[j,i] = rectT[j,i] * diag(sqMat)[i]
 -- rectT = [[1,4],[2,5],[3,6]], diag = [1,4]
 -- = [[1*1, 4*4], [2*1, 5*4], [3*1, 6*4]] = [[1,16],[2,20],[3,24]]
