@@ -719,12 +719,91 @@ private def Tensor.einsum2Core {A B outDims : DimList} {α : Type}
   Tensor.einsumNCore (outDims := outDims)
     #[{ dims := A, t := x }, { dims := B, t := y }]
 
+private def Tensor.einsum2BySrc {A B outDims : DimList} {α : Type}
+    [Inhabited α] [Zero α] [Add α] [Mul α]
+    (x : Tensor A α) (y : Tensor B α)
+    (outSrc : Array (Bool × Nat))
+    : Tensor outDims α := Id.run do
+  let outShape := shapeOf outDims
+  let outTotal := totalSize outShape
+  -- Build output → operand axis mapping
+  let mut aOutMap : Array (Option Nat) := Array.mkArray A.length none
+  let mut bOutMap : Array (Option Nat) := Array.mkArray B.length none
+  for oAxis in [:outSrc.size] do
+    let (fromB, srcIdx) := outSrc[oAxis]!
+    if fromB then bOutMap := bOutMap.set! srcIdx (some oAxis)
+    else aOutMap := aOutMap.set! srcIdx (some oAxis)
+  -- Contracted axes
+  let mut aContr : Array Nat := #[]
+  for p in [:A.length] do
+    if (aOutMap[p]!).isNone then aContr := aContr.push p
+  let mut bContr : Array Nat := #[]
+  for p in [:B.length] do
+    if (bOutMap[p]!).isNone then bContr := bContr.push p
+  -- Pair contracted axes by dim value, append unpaired
+  let mut contrSizes : Array Nat := #[]
+  let mut contrAAxis : Array (Option Nat) := #[]
+  let mut contrBAxis : Array (Option Nat) := #[]
+  let mut bContrUsed := Array.mkArray bContr.size false
+  for ai in aContr do
+    let mut matched := false
+    for bi_idx in [:bContr.size] do
+      if !bContrUsed[bi_idx]! && !matched then
+        let bi := bContr[bi_idx]!
+        if A.get! ai == B.get! bi then
+          contrSizes := contrSizes.push x.shape[ai]!
+          contrAAxis := contrAAxis.push (some ai)
+          contrBAxis := contrBAxis.push (some bi)
+          bContrUsed := bContrUsed.set! bi_idx true
+          matched := true
+    if !matched then
+      contrSizes := contrSizes.push x.shape[ai]!
+      contrAAxis := contrAAxis.push (some ai)
+      contrBAxis := contrBAxis.push none
+  for bi_idx in [:bContr.size] do
+    if !bContrUsed[bi_idx]! then
+      let bi := bContr[bi_idx]!
+      contrSizes := contrSizes.push y.shape[bi]!
+      contrAAxis := contrAAxis.push none
+      contrBAxis := contrBAxis.push (some bi)
+  let contrTotal := totalSize contrSizes
+  let mut resultData : Array α := Array.mkEmpty outTotal
+  for outFlat in [:outTotal] do
+    let outIdx := toMultiIndex outFlat outShape
+    let mut acc : α := 0
+    for contrFlat in [:contrTotal] do
+      let contrIdx := toMultiIndex contrFlat contrSizes
+      let mut aIdx := Array.mkArray A.length 0
+      for p in [:A.length] do
+        match aOutMap[p]! with
+        | some oAxis => aIdx := aIdx.set! p (outIdx[oAxis]!)
+        | none => pure ()
+      for ci in [:contrAAxis.size] do
+        match contrAAxis[ci]! with
+        | some ai => aIdx := aIdx.set! ai (contrIdx[ci]!)
+        | none => pure ()
+      let mut bIdx := Array.mkArray B.length 0
+      for p in [:B.length] do
+        match bOutMap[p]! with
+        | some oAxis => bIdx := bIdx.set! p (outIdx[oAxis]!)
+        | none => pure ()
+      for ci in [:contrBAxis.size] do
+        match contrBAxis[ci]! with
+        | some bi => bIdx := bIdx.set! bi (contrIdx[ci]!)
+        | none => pure ()
+      acc := acc + x.get! aIdx * y.get! bIdx
+    resultData := resultData.push acc
+  return { data := resultData
+           shape := outShape
+           strides := computeStrides outShape
+           offset := 0 }
+
 def Tensor.einsumBy {A B : DimList} {Out : Type} {α : Type}
     [h : EinsumOut Out A B]
     [Inhabited α] [Zero α] [Add α] [Mul α]
     (x : Tensor A α) (y : Tensor B α)
     (_f : SlotTuple A → SlotTuple B → Out) : Tensor h.outDims α :=
-  Tensor.einsum2Core (outDims := h.outDims) x y
+  Tensor.einsum2BySrc (outDims := h.outDims) x y h.outSrc.toArray
 
 class EinsumArgs (Ops : Type) (outDims : DimList) (α : Type) where
   validDims : Bool
