@@ -1020,6 +1020,8 @@ def merged2 : Tensor [h, bw, c] := image.rearrange
 -- Einops-style flatten: "b c h w -> b (c h w)"
 def chw := c * h * w
 def flattenedCHW : Tensor [b, chw] := image.rearrange
+-- Keep this as a type-level example only (large runtime tensor).
+-- Use the small variant below for #eval.
 
 -- Small flatten demo to keep #eval fast
 def sb := dim! 2
@@ -1046,7 +1048,6 @@ def flattenedSmallCHW : Tensor [sb, schws] := small4d.rearrange
 #eval bilinear
 #eval flattenedSmallCHW.shape -- #[2, 12]
 #eval flattenedSmallCHW
--- #eval flattenedCHW.shape
 
 def db := dim! 2
 def dw := dim! 3

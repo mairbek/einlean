@@ -191,6 +191,8 @@ Runtime execution uses a generic contraction kernel that maps output labels vs r
 
 ## Usage Examples (Current API)
 
+Note: examples in `Einlean.lean` keep `#eval` on small tensors for build speed; larger tensors are usually kept as typed declarations without runtime evaluation.
+
 ```lean
 def b := dim! 32
 def h := dim! 224
