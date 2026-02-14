@@ -280,7 +280,20 @@ def SlotTuple : (dims : DimList) → Type
   | [d0, d1] => Slot [d0, d1] ⟨0, Nat.zero_lt_succ 1⟩ × Slot [d0, d1] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 0)⟩
   | [d0, d1, d2] => Slot [d0, d1, d2] ⟨0, Nat.zero_lt_succ 2⟩ × Slot [d0, d1, d2] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 1)⟩ × Slot [d0, d1, d2] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0))⟩
   | [d0, d1, d2, d3] => Slot [d0, d1, d2, d3] ⟨0, Nat.zero_lt_succ 3⟩ × Slot [d0, d1, d2, d3] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 2)⟩ × Slot [d0, d1, d2, d3] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 1))⟩ × Slot [d0, d1, d2, d3] ⟨3, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0)))⟩
-  | _ :: _ :: _ :: _ :: _ :: _ => PUnit
+  | [d0, d1, d2, d3, d4] =>
+      Slot [d0, d1, d2, d3, d4] ⟨0, Nat.zero_lt_succ 4⟩ ×
+      Slot [d0, d1, d2, d3, d4] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 3)⟩ ×
+      Slot [d0, d1, d2, d3, d4] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 2))⟩ ×
+      Slot [d0, d1, d2, d3, d4] ⟨3, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 1)))⟩ ×
+      Slot [d0, d1, d2, d3, d4] ⟨4, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0))))⟩
+  | [d0, d1, d2, d3, d4, d5] =>
+      Slot [d0, d1, d2, d3, d4, d5] ⟨0, Nat.zero_lt_succ 5⟩ ×
+      Slot [d0, d1, d2, d3, d4, d5] ⟨1, Nat.succ_lt_succ (Nat.zero_lt_succ 4)⟩ ×
+      Slot [d0, d1, d2, d3, d4, d5] ⟨2, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 3))⟩ ×
+      Slot [d0, d1, d2, d3, d4, d5] ⟨3, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 2)))⟩ ×
+      Slot [d0, d1, d2, d3, d4, d5] ⟨4, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 1))))⟩ ×
+      Slot [d0, d1, d2, d3, d4, d5] ⟨5, Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.succ_lt_succ (Nat.zero_lt_succ 0)))))⟩
+  | _ :: _ :: _ :: _ :: _ :: _ :: _ => PUnit
 
 -- ============================================
 -- MERGED SLOTS (for dimension merging in rearrange)
