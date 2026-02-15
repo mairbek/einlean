@@ -15,16 +15,16 @@ namespace Einlean
 -- ============================================
 
 structure Atom where
+  root : Nat
   id : Nat
   size : Nat
-  rank : Nat := 0
   deriving Repr, Inhabited, BEq, DecidableEq
 
 structure Dim where
   atoms : List Atom
   deriving Repr, Inhabited, BEq, DecidableEq
 
-def dim (id : Nat) (size : Nat) : Dim := ⟨[{ id := id, size := size, rank := 0 }]⟩
+def dim (id : Nat) (size : Nat) : Dim := ⟨[{ root := id, id := id, size := size }]⟩
 
 open Lean in
 scoped macro "dim!" size:term : term => do
@@ -39,8 +39,8 @@ private def normalizeAtoms (atoms : List Atom) : List Atom :=
     match revAcc with
     | [] => [a]
     | prev :: rest =>
-        if prev.id == a.id then
-          { id := prev.id, size := prev.size * a.size, rank := 0 } :: rest
+        if prev.root == a.root then
+          { root := prev.root, id := prev.id, size := prev.size * a.size } :: rest
         else
           a :: revAcc
   (atoms.foldl step []).reverse
@@ -48,28 +48,13 @@ private def normalizeAtoms (atoms : List Atom) : List Atom :=
 instance : Mul Dim where
   mul d1 d2 := ⟨normalizeAtoms (d1.atoms ++ d2.atoms)⟩
 
-def Dim.factorAt (d : Dim) (k tag : Nat)
-    (_single : d.atoms.length = 1 := by decide)
-    (_pos : k > 0 := by decide)
-    (_div : d.size % k = 0 := by decide) : Dim :=
-  let a := d.atoms.get! 0
-  ⟨[{ id := a.id, size := k, rank := tag + 1 }]⟩
-
-def Dim.factor! (d : Dim) (k : Nat)
-    (_single : d.atoms.length = 1 := by decide)
-    (_pos : k > 0 := by decide)
-    (_div : d.size % k = 0 := by decide) : Dim :=
-  Dim.factorAt d k k _single _pos _div
-
 def Dim.factorPair! (d : Dim) (k : Nat)
     (_single : d.atoms.length = 1 := by decide)
     (_pos : k > 0 := by decide)
     (_div : d.size % k = 0 := by decide) : Dim × Dim :=
   let a := d.atoms.get! 0
-  -- Keep outer rank > inner rank so atom-order reconstruction matches
-  -- the common split pattern (outer, inner).
-  let outer : Dim := ⟨[{ id := a.id, size := d.size / k, rank := 2 }]⟩
-  let inner : Dim := ⟨[{ id := a.id, size := k, rank := 1 }]⟩
+  let outer : Dim := ⟨[{ root := a.root, id := a.id, size := d.size / k }]⟩
+  let inner : Dim := ⟨[{ root := a.root, id := a.id, size := k }]⟩
   (outer, inner)
 
 open Lean in
@@ -82,6 +67,21 @@ macro_rules
         def $inner : Dim := (Dim.factorPair! $d $k).2)
 
 abbrev DimList := List Dim
+abbrev Shape := DimList
+
+class DecompDim (d : Dim) where
+  Pack : Type
+  toLin : Pack → Nat
+  fromLin : Nat → Pack
+
+instance (d : Dim) : DecompDim d where
+  Pack := Nat
+  toLin i := i % d.size
+  fromLin i := i % d.size
+
+inductive Idx : Shape → Type
+  | nil : Idx []
+  | cons {d : Dim} {ds : Shape} : (DecompDim.Pack d) → Idx ds → Idx (d :: ds)
 
 -- ============================================
 -- HELPER FUNCTIONS
@@ -407,10 +407,10 @@ def allAtoms (dims : DimList) : List Atom :=
   dims.foldl (fun acc d => acc ++ d.atoms) []
 
 private def uniqueIds (atoms : List Atom) : List Nat :=
-  atoms.foldl (fun ids a => if ids.any (· == a.id) then ids else ids ++ [a.id]) []
+  atoms.foldl (fun ids a => if ids.any (· == a.root) then ids else ids ++ [a.root]) []
 
 private def productForId (atoms : List Atom) (id : Nat) : Nat :=
-  atoms.foldl (fun acc a => if a.id == id then acc * a.size else acc) 1
+  atoms.foldl (fun acc a => if a.root == id then acc * a.size else acc) 1
 
 def validRearrange (inDims outDims : DimList) : Bool :=
   let inA := allAtoms inDims
@@ -468,9 +468,9 @@ def computeAtomMapping (inDims outDims : DimList) : Array (Array Nat) := Id.run 
   for outD in outDims do
     let mut axes : Array Nat := #[]
     for outAtom in outD.atoms do
-      -- Find the input atom with matching id
+      -- Find the input atom with matching root id
       for (axIdx, inAtom) in inAtomIndex do
-        if inAtom == outAtom then
+        if inAtom.root == outAtom.root then
           -- Only add axis if not already present
           if !(axes.any (· == axIdx)) then
             axes := axes.push axIdx
@@ -524,43 +524,32 @@ private def axisIndexFromAtomDigits (digits atomSizes : Array Nat) : Nat := Id.r
 private def positionsForId (atoms : Array Atom) (id : Nat) : Array Nat := Id.run do
   let mut ps : Array Nat := #[]
   for i in [:atoms.size] do
-    if atoms[i]!.id == id then
+    if atoms[i]!.root == id then
       ps := ps.push i
   return ps
 
-private def sortPositionsByRank (atoms : Array Atom) (ps : Array Nat) : Array Nat :=
-  let rec insert (p : Nat) (acc : List Nat) : List Nat :=
-    match acc with
-    | [] => [p]
-    | q :: qs =>
-        if atoms[p]!.rank >= atoms[q]!.rank then
-          p :: acc
-        else
-          q :: insert p qs
-  (ps.toList.foldl (fun acc p => insert p acc) []).toArray
-
 private structure RootSpec where
-  id : Nat
+  root : Nat
   inPos : Array Nat
   outPos : Array Nat
   inSizes : Array Nat
   outSizes : Array Nat
 
 private instance : Inhabited RootSpec where
-  default := { id := 0, inPos := #[], outPos := #[], inSizes := #[], outSizes := #[] }
+  default := { root := 0, inPos := #[], outPos := #[], inSizes := #[], outSizes := #[] }
 
 private def buildRootSpecs (inAtoms outAtoms : Array Atom) : Array RootSpec := Id.run do
   let mut ids : Array Nat := #[]
   for a in inAtoms do
-    if !(ids.any (· == a.id)) then
-      ids := ids.push a.id
+    if !(ids.any (· == a.root)) then
+      ids := ids.push a.root
   let mut specs : Array RootSpec := #[]
   for id in ids do
-    let inPos := sortPositionsByRank inAtoms (positionsForId inAtoms id)
-    let outPos := sortPositionsByRank outAtoms (positionsForId outAtoms id)
+    let inPos := positionsForId inAtoms id
+    let outPos := positionsForId outAtoms id
     let inSizes := inPos.map (fun p => inAtoms[p]!.size)
     let outSizes := outPos.map (fun p => outAtoms[p]!.size)
-    specs := specs.push { id := id, inPos := inPos, outPos := outPos, inSizes := inSizes, outSizes := outSizes }
+    specs := specs.push { root := id, inPos := inPos, outPos := outPos, inSizes := inSizes, outSizes := outSizes }
   return specs
 
 private def Tensor.rearrangeByRoots {inDims outDims : DimList} {α : Type} [Inhabited α]
