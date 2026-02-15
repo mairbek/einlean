@@ -11,4 +11,4 @@ require proofwidgets from git
 
 @[default_target]
 lean_lib Einlean where
-  roots := #[`Einlean, `Einlean.Viz, `Einlean.Viz.Demo, `Einlean.ForwardPassDemo, `EinleanDemo, `EinleanTest]
+  roots := #[`Einlean, `Einlean.Viz, `Einlean.Viz.Demo, `Einlean.ForwardPassDemo, `EinleanDemo, `EinleanTest, `Einlean.Core2]
